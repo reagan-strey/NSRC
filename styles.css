@@ -1,0 +1,407 @@
+:root {
+  --bg: #070b14;
+  --card: #0b1220;
+  --text: #eaf0ff;
+  --muted: #a9b4cc;
+  --line: rgba(255,255,255,0.10);
+
+  --ios-toolbar-pad: 72px;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+@supports (height: 100svh) { body { min-height: 100svh; } }
+@supports not (height: 100svh) { body { min-height: 100vh; } }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* TOP BAR */
+.topbar {
+  padding: calc(10px + env(safe-area-inset-top)) 14px 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(11,18,32,0.95), rgba(11,18,32,0.75));
+  position: sticky;
+  top: 0;
+  backdrop-filter: blur(10px);
+  z-index: 30;
+}
+
+.topbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.app-title {
+  margin: 0;
+  font-size: clamp(18px, 3.2vw, 24px);
+  letter-spacing: 0.2px;
+}
+
+.icon-btn {
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+/* Hide old controls row */
+.controls { display: none; }
+
+/* MAIN */
+.container {
+  padding: 12px;
+  max-width: 980px;
+  margin: 0 auto;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom) + var(--ios-toolbar-pad));
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 10px; /* slightly tighter to gain width */
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+}
+
+/* STATUS LINE */
+.status {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.status .meta {
+  display: inline-flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.status .meta-btn {
+  position: relative;              /* needed for select overlay */
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.05);
+  color: var(--muted);
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1;
+  user-select: none;
+  overflow: hidden;               /* keep overlay clipped */
+}
+
+.status .meta-btn strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.status .sep { opacity: 0.6; }
+
+/* ✅ iOS-safe: user taps the SELECT itself (transparent overlay) */
+.chip-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: none;
+  background: transparent;
+  color: transparent;
+
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* TABLE */
+.tablewrap {
+  overflow-x: hidden;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+thead th {
+  background: rgba(11,18,32,0.95);
+  border-bottom: 1px solid var(--line);
+  padding: 7px 5px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+thead th.sortable { cursor: pointer; user-select: none; }
+
+/* tighter spacing between title and ▲/▼ */
+thead th .sort-ind {
+  display: inline-block;
+  margin-left: 2px;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.95;
+  vertical-align: middle;
+}
+
+tbody td {
+  border-bottom: 1px solid var(--line);
+  padding: 7px 5px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+.num { text-align: right; }
+.center { text-align: center; }
+
+.hint {
+  margin: 10px 4px 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Expandable rows */
+tr.player-row { cursor: pointer; }
+tr.player-row:active td { background: rgba(255,255,255,0.05); }
+
+tr.year-row td {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+tr.year-row td:first-child { padding-left: 10px; }
+
+/* Player row caret */
+.chev {
+  display: inline-block;
+  width: 4px;
+  margin-right: 3px;
+  color: var(--muted);
+}
+
+/* DRAWER */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 50;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100svh;
+  width: min(320px, 88vw);
+  background: rgba(11,18,32,0.98);
+  border-left: 1px solid var(--line);
+  z-index: 60;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: calc(env(safe-area-inset-bottom) + 12px);
+  backdrop-filter: blur(10px);
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 12px 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.drawer-title {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.drawer-nav {
+  display: grid;
+  padding: 10px;
+  gap: 8px;
+}
+
+.nav-item {
+  text-align: left;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  padding: 12px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+.nav-item.is-active { background: rgba(255,255,255,0.14); }
+
+@media (max-width: 360px) {
+  thead th, tbody td { font-size: 11px; padding: 6px 4px; }
+}
+
+/* =========================
+   Logos & Course Maps View
+   ========================= */
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.05);
+}
+
+.seg-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.seg-btn.is-active {
+  background: rgba(255,255,255,0.14);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.gallery-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.gallery-meta {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.carousel {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  display: flex;
+  gap: 12px;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0,0,0,0.15);
+}
+
+.slide {
+  flex: 0 0 100%;
+  scroll-snap-align: center;
+  padding: 5px; /* smaller value, will increase size of the big image */
+  display: grid;
+  place-items: center;
+}
+
+/* Make the image use as much screen as possible */
+.slide img {
+  width: 100%;
+  height: auto;
+  max-height: 68vh; /* tweak if you want larger/smaller */
+  object-fit: contain;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.20);
+}
+
+/* Top-right counter */
+.gallery-counter {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* Below-image title (2 lines, centered, larger) */
+.gallery-caption {
+  text-align: center;
+  margin: 10px 8px 8px 8px;
+}
+
+.caption-year {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.15;
+}
+
+.caption-sub {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--muted);
+  line-height: 1.2;
+  margin-top: 4px;
+}
+
+/* Thumbnail strip */
+.thumbstrip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 8px 6px 2px 6px;
+  margin-top: 6px;
+}
+
+.thumb {
+  flex: 0 0 auto;
+  width: 58px;
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.06);
+  overflow: hidden;
+  position: relative;
+}
+
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thumb.is-active {
+  outline: 2px solid rgba(255,255,255,0.55);
+  outline-offset: 2px;
+}
+
+/* Hide the status div only when empty via CSS */
+.status:empty {
+  display: none;
+}

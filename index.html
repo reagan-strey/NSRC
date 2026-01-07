@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1220" />
+
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="styles.css" />
+
+    <title>NSRC</title>
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-title" content="NSRC">
+
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  </head>
+
+  <body>
+    <!-- Top App Bar -->
+    <header class="topbar" id="topbar">
+      <div class="topbar-row">
+        <h1 class="app-title" id="viewTitle">NSRC</h1>
+
+        <button id="menuBtn" class="icon-btn" type="button" aria-label="Open menu" aria-expanded="false">
+          ☰
+        </button>
+      </div>
+
+      <!-- View-specific controls render here -->
+      <div id="viewControls" class="controls"></div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container">
+      <section class="card">
+        <div class="status" id="status">Loading…</div>
+
+        <!-- View content renders here -->
+        <div id="viewBody"></div>
+      </section>
+    </main>
+
+    <!-- Drawer + overlay -->
+    <div id="overlay" class="overlay" hidden></div>
+
+    <aside id="drawer" class="drawer" hidden aria-label="Navigation menu">
+      <div class="drawer-head">
+        <div class="drawer-title">Views</div>
+        <button id="closeBtn" class="icon-btn" type="button" aria-label="Close menu">
+          ✕
+        </button>
+      </div>
+
+      <nav class="drawer-nav" id="drawerNav"></nav>
+    </aside>
+
+    <script src="app.js"></script>
+  </body>
+</html>
