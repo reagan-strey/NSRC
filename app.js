@@ -17,7 +17,7 @@ const CSV = {
 const LOGO_FILES = [
   "Logo23 - 2025 - Sand Valley.jpg",
   "Logo22 - 2024 - St. George.jpg",
-  "Logo21 - 2023 - Payne's Valley.jpg",
+  "Logo21 - 2023 - Paynes Valley.jpg",
   "Logo20 - 2022 - Harbour Town Golf Links.jpg",
   "Logo19 - 2021 - Bandon Dunes.jpg",
   "Logo18 - 2019 - TPC San Antonio.jpg",
@@ -46,7 +46,7 @@ const COURSE_FILES = [
   "Course32 - 2025 - The Lido.jpg",
   "Course28 - 2024 - Sand Hollow.jpg",
   "Course29 - 2024 - Wolf Creek.jpg",
-  "Course24 - 2023 - Payne's Valley.jpg",
+  "Course24 - 2023 - Paynes Valley.jpg",
   "Course25 - 2023 - Buffalo Ridge.jpg",
   "Course26 - 2023 - Ozark National.jpg",
   "Course27 - 2023 - Top of the Rock.jpg",
@@ -253,11 +253,11 @@ function cmp(a, b) {
 function triToggleSort(viewSort, col) {
   if (viewSort.col !== col) {
     viewSort.col = col;
-    viewSort.dir = "asc";
+    viewSort.dir = "desc";
     return;
   }
-  if (viewSort.dir === "asc") {
-    viewSort.dir = "desc";
+  if (viewSort.dir === "desc") {
+    viewSort.dir = "asc";
     return;
   }
   viewSort.col = null;
@@ -266,7 +266,7 @@ function triToggleSort(viewSort, col) {
 
 function sortIndicator(viewSort, col) {
   if (viewSort.col !== col) return "";
-  return viewSort.dir === "asc" ? "▲" : "▼";
+  return viewSort.dir === "desc" ? "▼" : "▲";
 }
 
 /***********************
