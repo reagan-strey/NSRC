@@ -8,7 +8,9 @@ const CSV = {
   masterPlayerResults:
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHHJf5JjoRNkO4wkTzgq_Uf4Wcye3HOghJ3HePez8gfnaeASLGvHqrsECYRQGSVfANqcxqL59KgkmL/pub?gid=1256859448&single=true&output=csv",
 
-  masterTeamResults: "",
+  masterTeamResults: 
+    
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHHJf5JjoRNkO4wkTzgq_Uf4Wcye3HOghJ3HePez8gfnaeASLGvHqrsECYRQGSVfANqcxqL59KgkmL/pub?gid=1987375919&single=true&output=csv",
 };
 
 /***********************
@@ -113,6 +115,10 @@ const cache = {
   matchLogPromise: null,
   matchLogRows: [],
   teamByPlayerYear: new Map(), // from match log
+  matchLogFullLoaded: false,
+  matchLogFullPromise: null,
+  matchLogFullRows: [], // full rows for Team Results drilldown
+  matchLogFullByYear: new Map(), // year -> array of rows
 };
 
 /***********************
@@ -137,13 +143,17 @@ const state = {
     sort: { col: null, dir: null },
     defaultSort: { col: "wins", dir: "desc" },
   },
+ 
+  tr: {
+    rows: [],                 // rows from Master Team Results
+    expandedYears: new Set(), // years currently expanded
+  },
 
   lm: {
     mode: "logos", // "logos" or "courses"
     index: 0,
   },
 };
-
 
 
 /***********************
@@ -227,6 +237,9 @@ function setRoute(routeId) {
       break;
     case "logos-maps":
       renderLogosAndMaps();
+      break;
+    case "team-results":
+      renderTeamResults();
       break;
     default:
       renderUnderConstruction(viewTitleEl.textContent);
@@ -344,6 +357,58 @@ function buildTeamByPlayerYearIndex(rows) {
 function getTeamFromMatchLog(player, year) {
   const ymap = cache.teamByPlayerYear.get(player);
   return ymap ? (ymap.get(year) || "") : "";
+}
+
+/***********************
+ * Shared: ensure full match log loaded (for Team Results drilldown)
+ ***********************/
+function ensureMatchLogFullLoaded() {
+  if (cache.matchLogFullLoaded) return Promise.resolve(cache.matchLogFullRows);
+  if (cache.matchLogFullPromise) return cache.matchLogFullPromise;
+
+  cache.matchLogFullPromise = (async () => {
+    const res = await fetch(CSV.masterMatchLog, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const csvText = await res.text();
+
+    const parsed = Papa.parse(csvText, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (h) => h.trim(),
+      transform: (val) => (typeof val === "string" ? val.trim() : val),
+    });
+
+    if (parsed.errors?.length) {
+      console.error(parsed.errors);
+      throw new Error("CSV parse error");
+    }
+
+    // Keep “full” rows needed for Team Results expansion
+    cache.matchLogFullRows = parsed.data
+      .filter((r) => r.Year && r.Team && r.Player)
+      .map((r) => ({
+        year: Number(String(r.Year).trim()),
+        team: String(r.Team || "").trim(),        // "Cali" / "Tex-Mex"
+        player: String(r.Player || "").trim(),
+        format: String(r.Format || "").trim(),    // "Singles" / "Fourball"
+        round: Number(String(r.Round || "").trim()),
+        result: String(r.Result || "").trim(),    // Win/Loss/Halved
+        points: toNumber(r.Points),               // already per-player points
+      }))
+      .filter((r) => Number.isFinite(r.year));
+
+    // Index by year
+    cache.matchLogFullByYear.clear();
+    for (const r of cache.matchLogFullRows) {
+      if (!cache.matchLogFullByYear.has(r.year)) cache.matchLogFullByYear.set(r.year, []);
+      cache.matchLogFullByYear.get(r.year).push(r);
+    }
+
+    cache.matchLogFullLoaded = true;
+    return cache.matchLogFullRows;
+  })();
+
+  return cache.matchLogFullPromise;
 }
 
 /***********************
@@ -1098,6 +1163,259 @@ function renderLogosAndMaps() {
     const slideWidth = carousel.clientWidth + 12; // 12px gap
     carousel.scrollTo({ left: lm.index * slideWidth, behavior: "smooth" });
   });
+}
+
+/***********************
+ * VIEW: TEAM RESULTS
+ ***********************/
+function renderTeamResults() {
+  const tr = state.tr;
+
+  // No changes to topbar or global layout; we only fill status + body.
+  viewControlsEl.innerHTML = ""; // keep controls hidden per your CSS
+
+  viewBodyEl.innerHTML = `
+    <div class="team-summary">
+      <div class="team-pills">
+        <div class="team-pill pill-cali" id="caliWinsPill">Cali Wins: --</div>
+        <div class="team-pill pill-tex" id="texWinsPill">Tex-Mex Wins: --</div>
+      </div>
+
+      <div class="tablewrap">
+        <table class="table" aria-label="Team results table">
+          <colgroup>
+            <col style="width: 35%" />
+            <col style="width: 15%" />
+            <col style="width: 15%" />
+            <col style="width: 35%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Year</th>
+              <th class="center">CA</th>
+              <th class="center">TX</th>
+              <th class="trip-right">Trip</th>
+            </tr>
+          </thead>
+          <tbody id="tbodyTR"></tbody>
+        </table>
+      </div>
+
+      <p class="hint">Tip: Tap a year row to expand details. Tap again to collapse.</p>
+    </div>
+  `;
+
+  const tbodyEl = document.getElementById("tbodyTR");
+  const caliWinsPill = document.getElementById("caliWinsPill");
+  const texWinsPill = document.getElementById("texWinsPill");
+
+  async function loadTeamResults() {
+    if (!CSV.masterTeamResults) {
+      setStatusHTML(`<div class="meta"><span>Master Team Results CSV URL is missing.</span></div>`);
+      tbodyEl.innerHTML = "";
+      return;
+    }
+
+    setStatusHTML(`<div class="meta"><span>Loading Team Results…</span></div>`);
+    tbodyEl.innerHTML = "";
+
+    try {
+      const res = await fetch(CSV.masterTeamResults, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const csvText = await res.text();
+
+      const parsed = Papa.parse(csvText, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (h) => h.trim(),
+        transform: (val) => (typeof val === "string" ? val.trim() : val),
+      });
+
+      if (parsed.errors?.length) {
+        console.error(parsed.errors);
+        throw new Error("CSV parse error");
+      }
+
+      // Expect columns: Year, Trip, Location, Winning Team, Cali Points, Tex-Mex Points
+      tr.rows = parsed.data
+        .map((r) => {
+          const year = Number(String(r.Year ?? "").trim());
+          if (!Number.isFinite(year)) return null;
+
+          const trip = String(r.Trip ?? "").trim();
+          const winningTeam = String(r["Winning Team"] ?? r.WinningTeam ?? "").trim();
+          const caliPts = toNumber(r["Cali Points"] ?? r.CaliPoints ?? r.Cali);
+          const texPts = toNumber(r["Tex-Mex Points"] ?? r["Tex-Mex"] ?? r.TexMexPoints ?? r.TexMex);
+
+          return { year, trip, winningTeam, caliPts, texPts };
+        })
+        .filter(Boolean);
+
+      // Sort by year descending
+      tr.rows.sort((a, b) => b.year - a.year);
+
+      // Wins count (by year)
+      const caliWins = tr.rows.filter((r) => r.winningTeam === "Cali").length;
+      const texWins = tr.rows.filter((r) => r.winningTeam === "Tex-Mex").length;
+
+      caliWinsPill.textContent = `Cali Wins: ${caliWins}`;
+      texWinsPill.textContent = `Tex-Mex Wins: ${texWins}`;
+
+      // Tournament count in the small status line
+      setStatusHTML(`<div class="meta"><span>Tournaments: ${tr.rows.length}</span></div>`);
+
+      renderTable();
+    } catch (e) {
+      console.error(e);
+      setStatusHTML(`<div class="meta"><span>Failed to load Team Results. Check the published CSV and headers.</span></div>`);
+    }
+  }
+
+  function renderTable() {
+    const parts = [];
+
+    for (const r of tr.rows) {
+      const isExpanded = tr.expandedYears.has(r.year);
+      const chev = isExpanded ? "▾" : "▸";
+
+      const caliWinCellClass = r.caliPts > r.texPts ? "win-cali" : "";
+      const texWinCellClass  = r.texPts > r.caliPts ? "win-tex"  : "";
+
+      parts.push(`
+        <tr class="player-row" data-rowtype="year" data-year="${r.year}">
+          <td><span class="chev">${chev}</span>${r.year}</td>
+          <td class="center ${caliWinCellClass}">${r.caliPts.toFixed(1)}</td>
+          <td class="center ${texWinCellClass}">${r.texPts.toFixed(1)}</td>
+          <td class="trip-right" title="${escapeHtml(r.trip)}">${escapeHtml(r.trip)}</td>
+        </tr>
+      `);
+
+      if (isExpanded) {
+        parts.push(renderExpandedYear(r.year));
+      }
+    }
+
+    tbodyEl.innerHTML = parts.join("");
+  }
+
+  function renderExpandedYear(year) {
+    // We render extra rows directly in the same table to keep column widths identical
+    const yearRows = cache.matchLogFullByYear.get(year) || [];
+
+    // Group 1: Points by Round (Round desc)
+    // key = `${round}|${format}`
+    const byRound = new Map();
+    for (const r of yearRows) {
+      if (!Number.isFinite(r.round) || !r.format) continue;
+      const key = `${r.round}|${r.format}`;
+      if (!byRound.has(key)) byRound.set(key, { round: r.round, format: r.format, cali: 0, tex: 0 });
+
+      const obj = byRound.get(key);
+
+      // Singles: sum points. Fourball: sum(points)/2 (because 2 players per team per match)
+      const div = r.format === "Fourball" ? 2 : 1;
+      if (r.team === "Cali") obj.cali += r.points / div;
+      if (r.team === "Tex-Mex") obj.tex += r.points / div;
+    }
+
+    const roundRows = Array.from(byRound.values()).sort((a, b) => b.round - a.round);
+
+    // Group 2: Points and Record by Player
+    // key = `${team}|${player}`
+    const byPlayer = new Map();
+    for (const r of yearRows) {
+      if (!r.player || !r.team) continue;
+      const key = `${r.team}|${r.player}`;
+      if (!byPlayer.has(key)) byPlayer.set(key, { team: r.team, player: r.player, points: 0, w: 0, l: 0, h: 0 });
+
+      const obj = byPlayer.get(key);
+      obj.points += r.points;
+      if (r.result === "Win") obj.w += 1;
+      else if (r.result === "Loss") obj.l += 1;
+      else if (r.result === "Halved") obj.h += 1;
+    }
+
+    const playerRows = Array.from(byPlayer.values()).sort((a, b) => {
+      const t = String(a.team).localeCompare(String(b.team)); // Cali then Tex-Mex
+      if (t !== 0) return t;
+      return b.points - a.points; // points desc
+    });
+
+    const out = [];
+
+    // Section header row (muted)
+    out.push(`
+      <tr class="year-row">
+        <td colspan="4"><strong>Points by Round</strong></td>
+      </tr>
+    `);
+
+    for (const rr of roundRows) {
+      const label = `Rnd ${rr.round} - ${rr.format}`;
+      out.push(`
+        <tr class="year-row">
+          <td title="${escapeHtml(label)}">${escapeHtml(label)}</td>
+          <td class="center">${rr.cali.toFixed(1)}</td>
+          <td class="center">${rr.tex.toFixed(1)}</td>
+          <td class="center"></td>
+        </tr>
+      `);
+    }
+
+    out.push(`
+      <tr class="year-row">
+        <td colspan="4" style="padding-top: 10px;"><strong>Points and Record by Player</strong></td>
+      </tr>
+    `);
+
+    for (const pr of playerRows) {
+      const teamAbbr = pr.team === "Cali" ? "CA" : (pr.team === "Tex-Mex" ? "TX" : pr.team);
+      const label = `${teamAbbr} - ${pr.player}`;
+      const record = `${pr.w}-${pr.l}-${pr.h}`;
+
+      out.push(`
+        <tr class="year-row">
+          <td title="${escapeHtml(label)}">${escapeHtml(label)}</td>
+          <td class="center">${pr.team === "Cali" ? pr.points.toFixed(1) : ""}</td>
+          <td class="center">${pr.team === "Tex-Mex" ? pr.points.toFixed(1) : ""}</td>
+          <td class="center">${escapeHtml(record)}</td>
+        </tr>
+      `);
+    }
+
+    return out.join("");
+  }
+
+  // Expand/collapse click
+  tbodyEl.addEventListener("click", async (e) => {
+    const row = e.target.closest("tr[data-rowtype='year']");
+    if (!row) return;
+
+    const year = Number(row.dataset.year);
+    if (!Number.isFinite(year)) return;
+
+    // Load match log (full) on first expansion
+    if (!cache.matchLogFullLoaded) {
+      setStatusHTML(`<div class="meta"><span>Loading year details…</span></div>`);
+      try {
+        await ensureMatchLogFullLoaded();
+      } catch (err) {
+        console.error(err);
+        setStatusHTML(`<div class="meta"><span>Could not load year drilldown. Check Master Match Log publish link.</span></div>`);
+        return;
+      }
+      // Restore status line after load
+      setStatusHTML(`<div class="meta"><span>Tournaments: ${tr.rows.length}</span></div>`);
+    }
+
+    if (tr.expandedYears.has(year)) tr.expandedYears.delete(year);
+    else tr.expandedYears.add(year);
+
+    renderTable();
+  });
+
+  // Initial load
+  loadTeamResults();
 }
 
 /***********************

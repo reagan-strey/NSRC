@@ -405,3 +405,49 @@ tr.year-row td:first-child { padding-left: 10px; }
 .status:empty {
   display: none;
 }
+
+/* =========================
+   Team Results View
+   ========================= */
+
+.team-pills {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.team-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 10px;
+  font-size: 12px;
+  text-align: center;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.pill-cali {
+  background: rgba(60, 140, 255, 0.35);
+  color: #eaf0ff;
+}
+
+.pill-tex {
+  background: rgba(255, 60, 60, 0.35);
+  color: #eaf0ff;
+}
+
+/* Winning team points highlight (must override zebra striping) */
+.table tbody td.win-cali {
+  background: rgba(60, 140, 255, 0.35);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.table tbody td.win-tex {
+  background: rgba(255, 60, 60, 0.35);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.trip-right { text-align: right; }
