@@ -1,3 +1,5 @@
+/* Latest file as of 1.13.2026 at 725pm */
+
 /***********************
  * CONFIG: CSV URLS
  ***********************/
@@ -5,11 +7,13 @@ const CSV = {
   masterMatchLog:
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHHJf5JjoRNkO4wkTzgq_Uf4Wcye3HOghJ3HePez8gfnaeASLGvHqrsECYRQGSVfANqcxqL59KgkmL/pub?gid=0&single=true&output=csv",
 
+  currentMatchLog:
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7ur2CnLVDH6aYXW8aIRuYnRJ2276zgIeGiJGCJ3o4PRhuD4g8cHgAefZ-SHQwnWPm38K72eQOQ3yW/pub?gid=458254007&single=true&output=csv",
+    
   masterPlayerResults:
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHHJf5JjoRNkO4wkTzgq_Uf4Wcye3HOghJ3HePez8gfnaeASLGvHqrsECYRQGSVfANqcxqL59KgkmL/pub?gid=1256859448&single=true&output=csv",
 
-  masterTeamResults: 
-    
+  masterTeamResults:
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHHJf5JjoRNkO4wkTzgq_Uf4Wcye3HOghJ3HePez8gfnaeASLGvHqrsECYRQGSVfANqcxqL59KgkmL/pub?gid=1987375919&single=true&output=csv",
 };
 
@@ -97,15 +101,16 @@ const drawerNav = document.getElementById("drawerNav");
 const VIEWS = [
   { id: "team-results", title: "Team Results" },
   { id: "player-results", title: "Player Results" },
-  { id: "tournament-view", title: "Tournament View" },
-  { id: "player-match-history", title: "Player Match History" },
-  { id: "player-bios", title: "Player Bios" },
-  { id: "nemesis", title: "Player Dominance vs Nemesis" },
-  { id: "logos-maps", title: "Logos and Course Maps" },
+  { id: "tournament-view", title: "Scoreboard (History)" },
   { id: "current-scoreboard", title: "Current Year Scoreboard" },
+  { id: "player-match-history", title: "Player Match History" },
+  { id: "nemesis", title: "Head-to-Head Dominance" },
+  { id: "player-bios", title: "Player Profile" },
+  { id: "logos-maps", title: "Logos and Course Maps" },
+  { id: "genai-analysis", title: "GenAI Analysis" },
 ];
 
-let currentRoute = "player-match-history";
+let currentRoute = "team-results";     // sets the default view
 
 /***********************
  * Shared caches
@@ -115,10 +120,10 @@ const cache = {
   matchLogPromise: null,
   matchLogRows: [],
   teamByPlayerYear: new Map(), // from match log
-  matchLogFullLoaded: false,
-  matchLogFullPromise: null,
-  matchLogFullRows: [], // full rows for Team Results drilldown
-  matchLogFullByYear: new Map(), // year -> array of rows
+  matchLogFull: {
+    master: { loaded: false, promise: null, rows: [], byYear: new Map() },
+    current: { loaded: false, promise: null, rows: [], byYear: new Map() },
+  },
 };
 
 /***********************
@@ -137,9 +142,9 @@ const state = {
 
   pr: {
     rows: [],
+    selectedYear: "All",
+    availableYears: [],
     expandedPlayers: new Set(),
-    selectedTrip: "All",
-    availableTrips: [],
     sort: { col: null, dir: null },
     defaultSort: { col: "wins", dir: "desc" },
   },
@@ -147,6 +152,27 @@ const state = {
   tr: {
     rows: [],                 // rows from Master Team Results
     expandedYears: new Set(), // years currently expanded
+  },
+ 
+  sb: {
+    selectedYear: null,          // number
+    availableYears: [],          // [2025, 2024, ...]
+    expandedKeys: new Set(),     // round|format
+  },
+
+  csb: {
+    selectedYear: null,
+    availableYears: [],
+    expandedKeys: new Set(),
+  },
+
+  h2h: {
+    rows: [],
+    selectedYear: "All",
+    availableYears: [],
+    expandedPlayers: new Set(),
+    sort: { col: null, dir: null },
+    defaultSort: { col: "ptsdiff", dir: "desc" },
   },
 
   lm: {
@@ -241,6 +267,15 @@ function setRoute(routeId) {
     case "team-results":
       renderTeamResults();
       break;
+    case "tournament-view":
+      renderScoreboard("master");
+      break;
+    case "current-scoreboard":
+      renderScoreboard("current");
+      break;
+    case "nemesis":
+      renderHeadToHeadDominance();
+      break;
     default:
       renderUnderConstruction(viewTitleEl.textContent);
       break;
@@ -253,6 +288,14 @@ function setRoute(routeId) {
 function toNumber(x) {
   const n = Number(String(x ?? "").trim());
   return Number.isFinite(n) ? n : 0;
+}
+
+function fmtInt(v) {
+  const n = toNumber(v);
+  if (n === null) return "";
+  // show integers without decimals; keep .5 etc if they ever occur
+  const isInt = Math.abs(n - Math.round(n)) < 1e-9;
+  return isInt ? String(Math.round(n)) : String(n);
 }
 
 function cmp(a, b) {
@@ -362,12 +405,17 @@ function getTeamFromMatchLog(player, year) {
 /***********************
  * Shared: ensure full match log loaded (for Team Results drilldown)
  ***********************/
-function ensureMatchLogFullLoaded() {
-  if (cache.matchLogFullLoaded) return Promise.resolve(cache.matchLogFullRows);
-  if (cache.matchLogFullPromise) return cache.matchLogFullPromise;
+function ensureMatchLogFullLoaded(sourceKey = "master") {
+  const bucket = cache.matchLogFull[sourceKey];
+  if (!bucket) throw new Error(`Unknown match log sourceKey: ${sourceKey}`);
 
-  cache.matchLogFullPromise = (async () => {
-    const res = await fetch(CSV.masterMatchLog, { cache: "no-store" });
+  if (bucket.loaded) return Promise.resolve(bucket.rows);
+  if (bucket.promise) return bucket.promise;
+
+  const url = sourceKey === "current" ? CSV.currentMatchLog : CSV.masterMatchLog;
+
+  bucket.promise = (async () => {
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const csvText = await res.text();
 
@@ -383,32 +431,40 @@ function ensureMatchLogFullLoaded() {
       throw new Error("CSV parse error");
     }
 
-    // Keep “full” rows needed for Team Results expansion
-    cache.matchLogFullRows = parsed.data
+    bucket.rows = parsed.data
       .filter((r) => r.Year && r.Team && r.Player)
       .map((r) => ({
         year: Number(String(r.Year).trim()),
-        team: String(r.Team || "").trim(),        // "Cali" / "Tex-Mex"
-        player: String(r.Player || "").trim(),
-        format: String(r.Format || "").trim(),    // "Singles" / "Fourball"
+        trip: String(r.Trip || "").trim(),
         round: Number(String(r.Round || "").trim()),
-        result: String(r.Result || "").trim(),    // Win/Loss/Halved
-        points: toNumber(r.Points),               // already per-player points
+        format: String(r.Format || "").trim(),
+        course: String(r.Course || "").trim(),
+        match: Number(String(r.Match || "").trim()),
+        matchId: String(r.Match_ID || r.MatchId || "").trim(),
+        player: String(r.Player || "").trim(),
+        team: String(r.Team || "").trim(),
+        strokes: String(r.Strokes ?? "").trim(),
+        opponent: String(r.Opponent || "").trim(),
+        result: String(r.Result || "").trim(),
+        points: toNumber(r.Points),
+        w: toNumber(r.W),
+        l: toNumber(r.L),
+        h: toNumber(r.H),
+        ptsdiff: toNumber(r.Pts_Diff),
       }))
       .filter((r) => Number.isFinite(r.year));
 
-    // Index by year
-    cache.matchLogFullByYear.clear();
-    for (const r of cache.matchLogFullRows) {
-      if (!cache.matchLogFullByYear.has(r.year)) cache.matchLogFullByYear.set(r.year, []);
-      cache.matchLogFullByYear.get(r.year).push(r);
+    bucket.byYear.clear();
+    for (const r of bucket.rows) {
+      if (!bucket.byYear.has(r.year)) bucket.byYear.set(r.year, []);
+      bucket.byYear.get(r.year).push(r);
     }
 
-    cache.matchLogFullLoaded = true;
-    return cache.matchLogFullRows;
+    bucket.loaded = true;
+    return bucket.rows;
   })();
 
-  return cache.matchLogFullPromise;
+  return bucket.promise;
 }
 
 /***********************
@@ -468,25 +524,44 @@ function renderPlayerResults() {
   }
 
   function renderStatus(playersCount) {
-    const trips = ["All", ...pr.availableTrips];
-    const tripLabel = pr.selectedTrip;
+    const years = ["All", ...pr.availableYears]; // e.g. ["All", 2025, 2024, ...]
+    const yearLabel = String(pr.selectedYear);
+
+    const tripLabel =
+      pr.selectedYear === "All"
+        ? "All"
+        : (pr.tripByYear?.get(Number(pr.selectedYear)) || "");
 
     setStatusHTML(`
       <div class="meta">
         <span class="meta-btn">
-          Trip: <strong>${escapeHtml(tripLabel)}</strong>
-          <select class="chip-select" id="prTripSelect" aria-label="Trip filter">
-            ${trips.map(t => `<option value="${escapeHtml(t)}"${t===tripLabel?" selected":""}>${escapeHtml(t)}</option>`).join("")}
+          Year: <strong>${escapeHtml(yearLabel)}</strong>
+          <select class="chip-select" id="prYearSelect" aria-label="Year filter">
+            ${years
+              .map((y) => {
+                const yStr = String(y);
+                return `<option value="${escapeHtml(yStr)}"${
+                  yStr === yearLabel ? " selected" : ""
+                }>${escapeHtml(yStr)}</option>`;
+              })
+              .join("")}
           </select>
         </span>
+
         <span class="sep">•</span>
+
+        <span>Trip: <strong>${escapeHtml(tripLabel)}</strong></span>
+
+        <span class="sep">•</span>
+
         <span>Players: ${playersCount}</span>
       </div>
     `);
 
-    document.getElementById("prTripSelect").addEventListener("change", (e) => {
-      pr.selectedTrip = e.target.value;
+    document.getElementById("prYearSelect").addEventListener("change", (e) => {
+      pr.selectedYear = e.target.value === "All" ? "All" : Number(e.target.value);
       pr.expandedPlayers.clear();
+      pr.sort = { col: null, dir: null }; // optional: resets back to default sort for the view
       render();
     });
   }
@@ -518,24 +593,33 @@ function renderPlayerResults() {
     pr.rows = parsed.data;
     pr.expandedPlayers.clear();
 
-    // Trips (A→Z)
-    const sample = pr.rows[0] || {};
-    const tripCol = pickFirstColumn(sample, COLS.trip);
-    if (tripCol) {
-      const tripSet = new Set(
-        pr.rows
-          .map((r) => String(r[tripCol] ?? "").trim())
-          .filter((t) => t && t.toLowerCase() !== "total" && t.toLowerCase() !== "all")
-      );
-      pr.availableTrips = Array.from(tripSet).sort((a, b) => String(a).localeCompare(String(b)));
-    } else {
-      pr.availableTrips = [];
-    }
+    // Years (desc) + Trip lookup by Year
+      const sample = pr.rows[0] || {};
+      const yearCol = pickFirstColumn(sample, COLS.year) || "Year";
+      const tripCol = pickFirstColumn(sample, COLS.trip);
 
-    // Keep selection valid
-    if (pr.selectedTrip !== "All" && !pr.availableTrips.includes(pr.selectedTrip)) {
-      pr.selectedTrip = "All";
-    }
+      const yearSet = new Set();
+      pr.tripByYear = new Map();
+
+      for (const r of pr.rows) {
+        const y = parseYear(r[yearCol]);
+        if (!Number.isFinite(y)) continue;
+
+        yearSet.add(y);
+
+        if (tripCol) {
+          const trip = String(r[tripCol] ?? "").trim();
+          if (trip && !pr.tripByYear.has(y)) pr.tripByYear.set(y, trip);
+        }
+      }
+
+      pr.availableYears = Array.from(yearSet).sort((a, b) => b - a);
+
+      // Keep selection valid
+      if (pr.selectedYear !== "All") {
+        const yNum = Number(pr.selectedYear);
+        if (!pr.availableYears.includes(yNum)) pr.selectedYear = "All";
+      }
 
     render();
   }
@@ -559,11 +643,6 @@ function renderPlayerResults() {
     for (const r of pr.rows) {
       const player = String(r[playerCol] ?? "").trim();
       if (!player) continue;
-
-      if (tripCol && pr.selectedTrip !== "All") {
-        const trip = String(r[tripCol] ?? "").trim();
-        if (trip !== pr.selectedTrip) continue;
-      }
 
       const year = parseYear(r[yearCol]);
       const wins = toNumber(r[winsCol]);
@@ -623,11 +702,26 @@ function renderPlayerResults() {
   function render() {
     const { totalsByPlayer, yearsByPlayer } = buildAggregates();
 
-    let players = Array.from(totalsByPlayer.entries()).map(([player, t]) => {
-      const denom = t.wins + t.losses;
-      const pct = denom > 0 ? t.wins / denom : 0;
-      return { player, wins: t.wins, losses: t.losses, pct };
-    });
+    let players;
+
+    if (pr.selectedYear === "All") {
+      players = Array.from(totalsByPlayer.entries()).map(([player, t]) => {
+        const denom = t.wins + t.losses;
+        const pct = denom > 0 ? t.wins / denom : 0;
+        return { player, wins: t.wins, losses: t.losses, pct };
+      });
+    } else {
+      const y = Number(pr.selectedYear);
+      players = Array.from(yearsByPlayer.entries()).map(([player, ym]) => {
+        const a = ym.get(y);
+        const wins = a ? a.wins : 0;
+        const losses = a ? a.losses : 0;
+        const denom = wins + losses;
+        const pct = denom > 0 ? wins / denom : 0;
+        return { player, wins, losses, pct };
+      });
+    }
+
 
     players = players.filter((p) => p.wins + p.losses > 0);
     players = applySort(players);
@@ -652,10 +746,14 @@ function renderPlayerResults() {
 
       if (isExpanded) {
         const ym = yearsByPlayer.get(p.player) || new Map();
-        const years = Array.from(ym.keys()).sort((a, b) => b - a);
+        const years = 
+          pr.selectedYear === "All"
+            ? Array.from(ym.keys()).sort((a, b) => b - a)
+            : [Number(pr.selectedYear)];
 
         for (const y of years) {
           const a = ym.get(y);
+          if (!a) continue;
           const denom = a.wins + a.losses;
           if (denom <= 0) continue;
           const pct = a.wins / denom;
@@ -729,7 +827,7 @@ function renderPlayerMatchHistory() {
             <th class="num sortable" data-col="wins">W<span class="sort-ind" id="pmhSortW"></span></th>
             <th class="num sortable" data-col="losses">L<span class="sort-ind" id="pmhSortL"></span></th>
             <th class="num sortable" data-col="halved">H<span class="sort-ind" id="pmhSortH"></span></th>
-            <th class="num sortable" data-col="pct">Pts%<span class="sort-ind" id="pmhSortPct"></span></th>
+            <th class="num sortable" data-col="pct">Pt%<span class="sort-ind" id="pmhSortPct"></span></th>
           </tr>
         </thead>
         <tbody id="tbodyPMH"></tbody>
@@ -1201,7 +1299,7 @@ function renderTeamResults() {
         </table>
       </div>
 
-      <p class="hint">Tip: Tap a year row to expand details. Tap again to collapse.</p>
+      <p class="hint">Tap a year row to expand details. Tap again to collapse.</p>
     </div>
   `;
 
@@ -1300,7 +1398,8 @@ function renderTeamResults() {
 
   function renderExpandedYear(year) {
     // We render extra rows directly in the same table to keep column widths identical
-    const yearRows = cache.matchLogFullByYear.get(year) || [];
+    const bucket = cache.matchLogFull.master;
+    const yearRows = bucket.byYear.get(year) || [];
 
     // Group 1: Points by Round (Round desc)
     // key = `${round}|${format}`
@@ -1395,10 +1494,10 @@ function renderTeamResults() {
     if (!Number.isFinite(year)) return;
 
     // Load match log (full) on first expansion
-    if (!cache.matchLogFullLoaded) {
+    if (!cache.matchLogFull?.master?.loaded) {
       setStatusHTML(`<div class="meta"><span>Loading year details…</span></div>`);
       try {
-        await ensureMatchLogFullLoaded();
+        await ensureMatchLogFullLoaded("master");
       } catch (err) {
         console.error(err);
         setStatusHTML(`<div class="meta"><span>Could not load year drilldown. Check Master Match Log publish link.</span></div>`);
@@ -1416,6 +1515,626 @@ function renderTeamResults() {
 
   // Initial load
   loadTeamResults();
+}
+
+/***********************
+ * VIEW: SCOREBOARD
+ ***********************/
+function renderScoreboard(sourceKey = "master") {
+  const sb = sourceKey === "current" ? state.csb : state.sb;
+ 
+  const bucket = cache.matchLogFull[sourceKey];
+
+  viewControlsEl.innerHTML = "";
+
+  viewBodyEl.innerHTML = `
+    <div class="team-summary">
+      <div class="tablewrap">
+        <table class="table" aria-label="Scoreboard table">
+          <colgroup>
+            <col style="width: 35%" />
+            <col style="width: 15%" />
+            <col style="width: 15%" />
+            <col style="width: 35%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Round/Player</th>
+              <th class="center">CA</th>
+              <th class="center">TX</th>
+              <th class="trip-right">Course</th>
+            </tr>
+          </thead>
+          <tbody id="tbodySB"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <p class="hint">Tap a round row to expand. Tap again to collapse.</p>
+  `;
+
+  const tbodyEl = document.getElementById("tbodySB");
+
+  function setMetaLine(year, trip) {
+    const years = sb.availableYears.slice().sort((a, b) => b - a);
+    const yearLabel = String(year);
+
+    setStatusHTML(`
+      <div class="meta">
+        <span class="meta-btn">
+          Year: <strong>${escapeHtml(yearLabel)}</strong>
+          <select class="chip-select" id="sbYearSelect" aria-label="Year filter">
+            ${years
+              .map((y) => `<option value="${y}"${String(y) === yearLabel ? " selected" : ""}>${y}</option>`)
+              .join("")}
+          </select>
+        </span>
+
+        <span>Trip: <strong>${escapeHtml(trip || "")}</strong></span>
+      </div>
+    `);
+
+    document.getElementById("sbYearSelect").addEventListener("change", (e) => {
+      sb.selectedYear = Number(e.target.value);
+      sb.expandedKeys.clear();
+      render();
+    });
+  }
+
+  function sumTeamPoints(rows, team) {
+    let total = 0;
+    for (const r of rows) {
+      if (r.team !== team) continue;
+      const div = r.format === "Fourball" ? 2 : 1;
+      total += (r.points || 0) / div;
+    }
+    return total;
+  }
+
+  function buildRoundGroups(yearRows) {
+    // key = `${round}|${format}`
+    const groups = new Map();
+
+    for (const r of yearRows) {
+      if (!Number.isFinite(r.round) || !r.format) continue;
+      const key = `${r.round}|${r.format}`;
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          round: r.round,
+          format: r.format,
+          course: r.course || "",
+          caliPts: 0,
+          texPts: 0,
+        });
+      }
+      const g = groups.get(key);
+
+      // course: keep first non-empty
+      if (!g.course && r.course) g.course = r.course;
+
+      // points: Singles sum; Fourball sum/2 (per your earlier logic)
+      const div = r.format === "Fourball" ? 2 : 1;
+      if (r.team === "Cali") g.caliPts += (r.points || 0) / div;
+      if (r.team === "Tex-Mex") g.texPts += (r.points || 0) / div;
+    }
+
+    // round desc
+    return Array.from(groups.values()).sort((a, b) => b.round - a.round);
+  }
+
+  function buildMatchRowsForRound(yearRows, round, format) {
+    // Only rows for this round/format
+    const subset = yearRows.filter((r) => r.round === round && r.format === format);
+
+    // ✅ Group by Match_ID (preferred). Fallback to round|format|match if Match_ID missing.
+    const byMatchId = new Map();
+    for (const r of subset) {
+      const key =
+        (r.matchId && String(r.matchId).trim()) ||
+        `${r.round}|${r.format}|${String(r.match ?? "").trim()}`;
+
+      if (!byMatchId.has(key)) byMatchId.set(key, []);
+      byMatchId.get(key).push(r);
+    }
+
+    // Sort match groups by Match (numeric) when available; else by Match_ID string.
+    const matchKeys = Array.from(byMatchId.keys()).sort((a, b) => {
+      const ra = byMatchId.get(a)?.[0];
+      const rb = byMatchId.get(b)?.[0];
+      const ma = Number(ra?.match);
+      const mb = Number(rb?.match);
+      if (Number.isFinite(ma) && Number.isFinite(mb)) return ma - mb;
+      return String(a).localeCompare(String(b));
+    });
+
+    // Helpers for optional strokes display
+    function leftLabel(player, strokes) {
+      const s = String(strokes ?? "").trim();
+      return s ? `${player} (${s})` : player;
+    }
+    function rightLabel(player, strokes) {
+      const s = String(strokes ?? "").trim();
+      return s ? `(${s}) ${player}` : player;
+    }
+
+    const out = [];
+
+    for (const key of matchKeys) {
+      const rows = byMatchId.get(key) || [];
+
+      const cali = rows.filter((r) => r.team === "Cali");
+      const tex = rows.filter((r) => r.team === "Tex-Mex");
+
+      // Stable ordering inside a match so it doesn’t “jump” between renders
+      cali.sort((a, b) => String(a.player).localeCompare(String(b.player)));
+      tex.sort((a, b) => String(a.player).localeCompare(String(b.player)));
+
+      // ---- Singles (1v1) ----
+      if (format === "Singles") {
+        const c = cali[0] || { player: "", result: "", strokes: "" };
+        const t = tex[0] || { player: "", result: "", strokes: "" };
+
+        const cWinClass = c.result === "Win" ? "win-cali" : "";
+        const tWinClass = t.result === "Win" ? "win-tex" : "";
+
+        const cName = leftLabel(String(c.player || ""), c.strokes);
+        const tName = rightLabel(String(t.player || ""), t.strokes);
+
+        out.push(`
+          <tr class="year-row">
+            <td title="${escapeHtml(cName)}">${escapeHtml(cName)}</td>
+            <td class="center ${cWinClass}">${escapeHtml(c.result || "")}</td>
+            <td class="center ${tWinClass}">${escapeHtml(t.result || "")}</td>
+            <td class="trip-right" title="${escapeHtml(tName)}">${escapeHtml(tName)}</td>
+          </tr>
+        `);
+
+        continue;
+      }
+
+      // ---- Fourball (2v2) w/ merged team result cells (Option B) ----
+      // We expect exactly 2 Cali + 2 Tex rows in a well-formed match.
+      const badCounts = !(cali.length === 2 && tex.length === 2);
+
+      // Determine the team-level results (should match within each team)
+      const caliRes1 = String(cali[0]?.result || "");
+      const caliRes2 = String(cali[1]?.result || "");
+      const texRes1 = String(tex[0]?.result || "");
+      const texRes2 = String(tex[1]?.result || "");
+
+      const caliMismatch = cali.length === 2 && caliRes1 !== caliRes2;
+      const texMismatch = tex.length === 2 && texRes1 !== texRes2;
+
+      const hasError = badCounts || caliMismatch || texMismatch;
+
+      const mergedCaliText = hasError ? "ERROR" : caliRes1;
+      const mergedTexText = hasError ? "ERROR" : texRes1;
+
+      // Color rules:
+      // - If ERROR: orange (cell-error)
+      // - Else: blue only if result == Win
+      const caliCellClass = hasError
+        ? "cell-error"
+        : (mergedCaliText === "Win" ? "win-cali" : "");
+
+      const texCellClass = hasError
+        ? "cell-error"
+        : (mergedTexText === "Win" ? "win-tex" : "");
+
+      // Render exactly 2 player rows (even if data is malformed, render what we have)
+      for (let i = 0; i < 2; i++) {
+        const c = cali[i] || { player: "", strokes: "" };
+        const t = tex[i] || { player: "", strokes: "" };
+
+        const cName = leftLabel(String(c.player || ""), c.strokes);
+        const tName = rightLabel(String(t.player || ""), t.strokes);
+
+        if (i === 0) {
+          // First row: includes the merged result cells with rowspan=2
+          out.push(`
+            <tr class="year-row">
+              <td title="${escapeHtml(cName)}">${escapeHtml(cName)}</td>
+              <td class="center ${caliCellClass}" rowspan="2">${escapeHtml(mergedCaliText)}</td>
+              <td class="center ${texCellClass}" rowspan="2">${escapeHtml(mergedTexText)}</td>
+              <td class="trip-right" title="${escapeHtml(tName)}">${escapeHtml(tName)}</td>
+            </tr>
+          `);
+        } else {
+          // Second row: players only, no CA/TX cells (since they are merged above)
+          out.push(`
+            <tr class="year-row">
+              <td title="${escapeHtml(cName)}">${escapeHtml(cName)}</td>
+              <td class="trip-right" title="${escapeHtml(tName)}">${escapeHtml(tName)}</td>
+            </tr>
+          `);
+        }
+      }
+    }
+
+    return out.join("");
+  }
+
+  async function init() {
+    // Ensure full log is loaded (same loader Team Results uses)
+    try {
+      await ensureMatchLogFullLoaded(sourceKey);
+    } catch (e) {
+      console.error(e);
+      setStatusHTML(`<div class="meta"><span>Failed to load Master Match Log.</span></div>`);
+      return;
+    }
+
+    // Available years (no "All")
+    const years = Array.from(bucket.byYear.keys()).filter((y) => Number.isFinite(y));
+    years.sort((a, b) => b - a);
+    sb.availableYears = years;
+
+    // Default year = highest
+    if (!Number.isFinite(sb.selectedYear)) sb.selectedYear = years[0];
+
+    render();
+  }
+
+  function render() {
+    const year = sb.selectedYear;
+    const yearRows = bucket.byYear.get(year) || [];
+
+    // Trip: take first non-empty trip
+    const trip = (yearRows.find((r) => r.trip)?.trip) || "";
+
+    setMetaLine(year, trip);
+
+    // Top pills row (just like Team Results)
+    const caliTotal = sumTeamPoints(yearRows, "Cali");
+    const texTotal = sumTeamPoints(yearRows, "Tex-Mex");
+
+    // Insert pills ABOVE the table (without changing global layout)
+    // We reuse the same .team-pills and .team-pill styles you already have.
+    const pillsHtml = `
+      <div class="team-pills" style="margin-bottom: 10px;">
+        <div class="team-pill pill-cali">Cali Points: ${caliTotal.toFixed(1)}</div>
+        <div class="team-pill pill-tex">Tex-Mex Points: ${texTotal.toFixed(1)}</div>
+      </div>
+    `;
+
+    // Put pills above tablewrap
+    const summary = viewBodyEl.querySelector(".team-summary");
+    const existing = summary.querySelector(".team-pills");
+    if (existing) existing.remove();
+    summary.insertAdjacentHTML("afterbegin", pillsHtml);
+
+    const rounds = buildRoundGroups(yearRows);
+
+    const html = [];
+    for (const g of rounds) {
+      const isExpanded = sb.expandedKeys.has(g.key);
+      const chev = isExpanded ? "▾" : "▸";
+
+      const label = `Rnd ${g.round} - ${g.format}`;
+
+      html.push(`
+        <tr class="player-row" data-rowtype="round" data-key="${escapeHtml(g.key)}">
+          <td title="${escapeHtml(label)}"><span class="chev">${chev}</span>${escapeHtml(label)}</td>
+          <td class="center sb-cali">${g.caliPts.toFixed(1)}</td>
+          <td class="center sb-tex">${g.texPts.toFixed(1)}</td>
+          <td class="trip-right" title="${escapeHtml(g.course)}">${escapeHtml(g.course)}</td>
+        </tr>
+      `);
+
+      if (isExpanded) {
+        html.push(buildMatchRowsForRound(yearRows, g.round, g.format));
+      }
+    }
+
+    tbodyEl.innerHTML = html.join("");
+  }
+
+  // Expand/collapse
+  tbodyEl.addEventListener("click", (e) => {
+    const row = e.target.closest("tr[data-rowtype='round']");
+    if (!row) return;
+
+    const key = row.dataset.key;
+    if (!key) return;
+
+    if (sb.expandedKeys.has(key)) sb.expandedKeys.delete(key);
+    else sb.expandedKeys.add(key);
+
+    render();
+  });
+
+  init();
+}
+
+/***********************
+ * Head-to-Head Dominance (Singles only)
+ ***********************/
+async function ensureH2HLoaded() {
+  const h2h = state.h2h;
+  if (h2h.rows.length) return;
+
+  const res = await fetch(CSV.masterMatchLog, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const csvText = await res.text();
+
+  const parsed = Papa.parse(csvText, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (h) => h.trim(),
+    transform: (val) => (typeof val === "string" ? val.trim() : val),
+  });
+
+  if (parsed.errors?.length) throw new Error("CSV parse error");
+
+  const raw = parsed.data
+    .filter((r) => r.Player && r.Year && String(r.Format || "").trim().toLowerCase() === "singles")
+    .map((r) => {
+      const year = Number(String(r.Year).trim());
+      const player = String(r.Player || "").trim();
+
+      const match = Number(String(r.Match || "").trim());
+      const round = Number(String(r.Round || "").trim());
+      const matchId = String(r.Match_ID || r.MatchId || `${year}-${round}-${match}`).trim();
+
+      const opponent = String(r.Opponent || "").trim();
+      const w = toNumber(r.W);
+      const l = toNumber(r.L);
+      const h = toNumber(r.H);
+      const points = toNumber(r.Points);
+      const ptsdiff = toNumber(r.Pts_Diff);
+
+      return { year, player, opponent, w, l, h, points, ptsdiff, matchId };
+    })
+    .filter((r) => Number.isFinite(r.year) && r.player);
+
+  // Derive Opponent from Match_ID if missing
+  const byMatch = new Map();
+  for (const r of raw) {
+    if (!byMatch.has(r.matchId)) byMatch.set(r.matchId, []);
+    byMatch.get(r.matchId).push(r);
+  }
+  for (const arr of byMatch.values()) {
+    if (arr.length < 2) continue;
+    for (const r of arr) {
+      if (r.opponent) continue;
+      const other = arr.find((x) => x !== r && x.player);
+      if (other) r.opponent = other.player;
+    }
+  }
+
+  h2h.availableYears = Array.from(new Set(raw.map((r) => r.year))).sort((a, b) => b - a);
+  h2h.rows = raw;
+}
+
+function ptsDiffClass(val) {
+  if (!Number.isFinite(val)) return "";
+  if (val >= 3) return "ptsdiff-pos-strong";
+  if (val > 0) return "ptsdiff-pos";
+  if (val <= -3) return "ptsdiff-neg-strong";
+  if (val < 0) return "ptsdiff-neg";
+  return "";
+}
+
+function fmtPtsDiff(v) {
+  const n = toNumber(v);
+  if (n === null) return "";
+  return n > 0 ? `+${fmtInt(n)}` : `${fmtInt(n)}`;
+}
+
+function renderHeadToHeadDominance() {
+  const h2h = state.h2h;
+  viewControlsEl.innerHTML = "";
+
+  viewBodyEl.innerHTML = `
+    <div class="tablewrap">
+      <table class="table" aria-label="Head-to-head dominance table">
+        <colgroup>
+          <col style="width: 39%" />
+          <col style="width: 10%" />
+          <col style="width: 9%" />
+          <col style="width: 9%" />
+          <col style="width: 15%" />
+          <col style="width: 18%" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th class="sortable" data-col="player">Player<span class="sort-ind" id="h2hSortPlayer"></span></th>
+            <th class="center sortable" data-col="w">W<span class="sort-ind" id="h2hSortW"></span></th>
+            <th class="center sortable" data-col="l">L<span class="sort-ind" id="h2hSortL"></span></th>
+            <th class="center sortable" data-col="h">H<span class="sort-ind" id="h2hSortH"></span></th>
+            <th class="center sortable" data-col="ptspct">Pt%<span class="sort-ind" id="h2hSortPtsPct"></span></th>
+            <th class="center sortable" data-col="ptsdiff">PtDiff<span class="sort-ind" id="h2hSortPts"></span></th>
+          </tr>
+        </thead>
+        <tbody id="tbodyH2H"></tbody>
+      </table>
+    </div>
+
+    <p class="hint">Tap a player row to expand. Tap again to collapse.</p>
+  `;
+
+  const tbodyEl = document.getElementById("tbodyH2H");
+  const thead = viewBodyEl.querySelector("thead");
+
+  function renderStatus(playersCount) {
+    const years = ["All", ...h2h.availableYears.map(String)];
+    const yearLabel = h2h.selectedYear === "All" ? "All" : String(h2h.selectedYear);
+
+    setStatusHTML(`
+      <div class="meta">
+        <span class="meta-btn">
+          Year: <strong>${escapeHtml(yearLabel)}</strong>
+          <select class="chip-select" id="h2hYearSelect" aria-label="Year filter">
+            ${years.map(y => `<option value="${escapeHtml(y)}"${y===yearLabel?" selected":""}>${escapeHtml(y)}</option>`).join("")}
+          </select>
+        </span>
+
+        <span class="sep">•</span>
+        <span>Format: <strong>Singles</strong></span>
+
+        <span class="sep">•</span>
+        <span>Players: <strong>${playersCount}</strong></span>
+      </div>
+    `);
+
+    const sel = document.getElementById("h2hYearSelect");
+    sel?.addEventListener("change", () => {
+      h2h.selectedYear = sel.value === "All" ? "All" : Number(sel.value);
+      h2h.expandedPlayers.clear();
+      h2h.sort = { col: null, dir: null };
+      render();
+    });
+  }
+
+  function aggregateCollapsed() {
+    const yearFilter = h2h.selectedYear;
+    const rows = yearFilter === "All" ? h2h.rows : h2h.rows.filter((r) => r.year === yearFilter);
+
+    const byPlayer = new Map();
+    for (const r of rows) {
+      if (!byPlayer.has(r.player)) {
+        byPlayer.set(r.player, { player: r.player, w: 0, l: 0, h: 0, points: 0, ptsdiff: 0, opp: new Map() });
+      }
+      const p = byPlayer.get(r.player);
+      p.w += r.w || 0;
+      p.l += r.l || 0;
+      p.h += r.h || 0;
+      p.points += r.points || 0;
+      p.ptsdiff += r.ptsdiff || 0;
+
+      if (r.opponent) {
+        if (!p.opp.has(r.opponent)) p.opp.set(r.opponent, { opp: r.opponent, w: 0, l: 0, h: 0, points: 0, ptsdiff: 0 });
+        const o = p.opp.get(r.opponent);
+        o.w += r.w || 0;
+        o.l += r.l || 0;
+        o.h += r.h || 0;
+        o.points += r.points || 0;
+        o.ptsdiff += r.ptsdiff || 0;
+      }
+    }
+
+    return Array.from(byPlayer.values());
+  }
+
+  function applyCollapsedSort(rows) {
+    const sortCol = h2h.sort.col || h2h.defaultSort.col;
+    const sortDir = h2h.sort.dir || h2h.defaultSort.dir;
+    const dirMul = sortDir === "asc" ? 1 : -1;
+
+    return rows.slice().sort((a, b) => {
+      const primary = cmp(a[sortCol], b[sortCol]) * dirMul;
+      if (primary !== 0) return primary;
+      return cmp(a.player, b.player);
+    });
+  }
+
+  function setSortIndicator() {
+    const col = h2h.sort.col || h2h.defaultSort.col;
+    const dir = h2h.sort.dir || h2h.defaultSort.dir;
+    const map = {
+      player: "h2hSortPlayer",
+      w: "h2hSortW",
+      l: "h2hSortL",
+      h: "h2hSortH",
+      ptspct: "h2hSortPtsPct",
+      ptsdiff: "h2hSortPts",
+    };
+    Object.values(map).forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = "";
+    });
+    const el = document.getElementById(map[col]);
+    if (el) el.textContent = dir === "asc" ? " ▲" : " ▼";
+  }
+
+  function onHeaderClick(e) {
+    const th = e.target.closest("th");
+    if (!th?.dataset?.col) return;
+    const col = th.dataset.col;
+
+    const defaultCol = h2h.defaultSort.col;
+    const defaultDir = h2h.defaultSort.dir;
+
+    if ((h2h.sort.col || defaultCol) !== col) {
+      h2h.sort = { col, dir: "desc" };
+    } else if ((h2h.sort.dir || defaultDir) === "desc") {
+      h2h.sort = { col, dir: "asc" };
+    } else if ((h2h.sort.dir || defaultDir) === "asc") {
+      h2h.sort = { col: null, dir: null };
+    } else {
+      h2h.sort = { col, dir: "desc" };
+    }
+
+    render();
+  }
+
+  thead.addEventListener("click", onHeaderClick);
+
+  async function render() {
+    try {
+      setStatusHTML("Loading…");
+      await ensureH2HLoaded();
+
+      const collapsed = applyCollapsedSort(aggregateCollapsed());
+      renderStatus(collapsed.length);
+      setSortIndicator();
+
+      const rowsHtml = [];
+      for (const p of collapsed) {
+        const isOpen = h2h.expandedPlayers.has(p.player);
+        const chev = isOpen ? "▾" : "▸";
+
+        rowsHtml.push(`
+          <tr class="player-row" data-player="${escapeHtml(p.player)}">
+            <td><span class="chev">${chev}</span>${escapeHtml(p.player)}</td>
+            <td class="center">${fmtInt(p.w)}</td>
+            <td class="center">${fmtInt(p.l)}</td>
+            <td class="center">${fmtInt(p.h)}</td>
+            <td class="center">${(((p.points || 0) / Math.max(1, (p.w || 0) + (p.l || 0) + (p.h || 0))) * 100).toFixed(1)}%</td>
+            <td class="center ${ptsDiffClass(p.ptsdiff)}">${fmtPtsDiff(p.ptsdiff)}</td>
+          </tr>
+        `);
+
+        if (isOpen) {
+          const oppRows = Array.from(p.opp.values())
+            .sort((a, b) => cmp(a.ptsdiff, b.ptsdiff) * -1 || cmp(a.opp, b.opp));
+
+          for (const o of oppRows) {
+            rowsHtml.push(`
+              <tr class="year-row">
+                <td>vs. ${escapeHtml(o.opp)}</td>
+                <td class="center">${fmtInt(o.w)}</td>
+                <td class="center">${fmtInt(o.l)}</td>
+                <td class="center">${fmtInt(o.h)}</td>
+                <td class="center">${(((o.points || 0) / Math.max(1, (o.w || 0) + (o.l || 0) + (o.h || 0))) * 100).toFixed(1)}%</td>
+                <td class="center ${ptsDiffClass(o.ptsdiff)}">${fmtPtsDiff(o.ptsdiff)}</td>
+              </tr>
+            `);
+          }
+        }
+      }
+
+      tbodyEl.innerHTML = rowsHtml.join("");
+
+      tbodyEl.querySelectorAll("tr.player-row").forEach((tr) => {
+        tr.addEventListener("click", () => {
+          const player = tr.dataset.player;
+          if (!player) return;
+          if (h2h.expandedPlayers.has(player)) h2h.expandedPlayers.delete(player);
+          else h2h.expandedPlayers.add(player);
+          render();
+        });
+      });
+    } catch (err) {
+      console.error(err);
+      setStatusHTML(`<span style="color:#ffb4b4">Error loading Head-to-Head data.</span>`);
+      tbodyEl.innerHTML = "";
+    }
+  }
+
+  render();
 }
 
 /***********************

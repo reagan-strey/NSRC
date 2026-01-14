@@ -52,7 +52,7 @@ body {
   width: 40px;
   height: 40px;
   border-radius: 12px;
-  font-size: 18px;
+  font-size: 20px;
   line-height: 1;
 }
 
@@ -451,3 +451,55 @@ tr.year-row td:first-child { padding-left: 10px; }
 }
 
 .trip-right { text-align: right; }
+
+/* Scoreboard round totals: always colored (override zebra striping) */
+.table tbody td.sb-cali {
+  background: rgba(60, 140, 255, 0.35);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.table tbody td.sb-tex {
+  background: rgba(255, 60, 60, 0.35);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+/* Scoreboard / merged match cells */
+.table td[rowspan] {
+  vertical-align: middle;
+}
+
+/* ERROR indicator (must override zebra striping) */
+.table tbody td.cell-error {
+  background: rgba(255, 170, 0, 0.35);
+  color: #ffffff;
+  font-weight: 800;
+  text-align: center;
+}
+
+/* =========================
+   Head-to-Head Dominance
+   ========================= */
+
+/* PtsDiff coloring (override zebra striping) */
+.table tbody td.ptsdiff-pos-strong {
+  background: rgba(60, 220, 120, 0.55);
+  color: #ffffff;
+  font-weight: 800;
+}
+.table tbody td.ptsdiff-pos {
+  background: rgba(60, 220, 120, 0.25);
+  color: #ffffff;
+  font-weight: 700;
+}
+.table tbody td.ptsdiff-neg {
+  background: rgba(255, 80, 80, 0.25);
+  color: #ffffff;
+  font-weight: 700;
+}
+.table tbody td.ptsdiff-neg-strong {
+  background: rgba(255, 80, 80, 0.55);
+  color: #ffffff;
+  font-weight: 800;
+}
