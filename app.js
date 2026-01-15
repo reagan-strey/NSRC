@@ -1,4 +1,4 @@
-/* Latest file as of 1.13.2026 at 725pm */
+/* Latest file as of 1.14.2026 at 1037pm */
 
 /***********************
  * CONFIG: CSV URLS
@@ -169,6 +169,7 @@ const state = {
   h2h: {
     rows: [],
     selectedYear: "All",
+    mode: "singles_opp",
     availableYears: [],
     expandedPlayers: new Set(),
     sort: { col: null, dir: null },
@@ -1869,7 +1870,7 @@ async function ensureH2HLoaded() {
   if (parsed.errors?.length) throw new Error("CSV parse error");
 
   const raw = parsed.data
-    .filter((r) => r.Player && r.Year && String(r.Format || "").trim().toLowerCase() === "singles")
+    .filter((r) => r.Player && r.Year && String(r.Format || "").trim())
     .map((r) => {
       const year = Number(String(r.Year).trim());
       const player = String(r.Player || "").trim();
@@ -1878,6 +1879,10 @@ async function ensureH2HLoaded() {
       const round = Number(String(r.Round || "").trim());
       const matchId = String(r.Match_ID || r.MatchId || `${year}-${round}-${match}`).trim();
 
+      const format = String(r.Format || "").trim();          // ✅ NEW
+      const team = String(r.Team || "").trim();              // ✅ NEW
+      const partner = String(r.Partner || "").trim();        // ✅ NEW (your new column)
+
       const opponent = String(r.Opponent || "").trim();
       const w = toNumber(r.W);
       const l = toNumber(r.L);
@@ -1885,7 +1890,7 @@ async function ensureH2HLoaded() {
       const points = toNumber(r.Points);
       const ptsdiff = toNumber(r.Pts_Diff);
 
-      return { year, player, opponent, w, l, h, points, ptsdiff, matchId };
+      return { year, player, opponent, partner, team, format, w, l, h, points, ptsdiff, matchId };
     })
     .filter((r) => Number.isFinite(r.year) && r.player);
 
@@ -1896,13 +1901,15 @@ async function ensureH2HLoaded() {
     byMatch.get(r.matchId).push(r);
   }
   for (const arr of byMatch.values()) {
-    if (arr.length < 2) continue;
-    for (const r of arr) {
-      if (r.opponent) continue;
-      const other = arr.find((x) => x !== r && x.player);
-      if (other) r.opponent = other.player;
-    }
+  // Only derive missing opponent for Singles-style matches (2 rows)
+  if (arr.length !== 2) continue;
+
+  for (const r of arr) {
+    if (r.opponent) continue;
+    const other = arr.find((x) => x !== r && x.player);
+    if (other) r.opponent = other.player;
   }
+}
 
   h2h.availableYears = Array.from(new Set(raw.map((r) => r.year))).sort((a, b) => b - a);
   h2h.rows = raw;
@@ -1962,6 +1969,14 @@ function renderHeadToHeadDominance() {
     const years = ["All", ...h2h.availableYears.map(String)];
     const yearLabel = h2h.selectedYear === "All" ? "All" : String(h2h.selectedYear);
 
+    const modes = [
+      { value: "singles_opp", label: "Singles vs Opponent" },
+      { value: "fourball_opp", label: "Fourball vs Opponent" },
+      { value: "fourball_partner", label: "Fourball with Partner" },
+    ];
+
+    const modeObj = modes.find(m => m.value === h2h.mode) || modes[0];
+
     setStatusHTML(`
       <div class="meta">
         <span class="meta-btn">
@@ -1971,11 +1986,13 @@ function renderHeadToHeadDominance() {
           </select>
         </span>
 
-        <span class="sep">•</span>
-        <span>Format: <strong>Singles</strong></span>
+        <span class="meta-btn">
+          Mode: <strong>${escapeHtml(modeObj.label)}</strong>
+          <select class="chip-select" id="h2hModeSelect" aria-label="Mode filter">
+            ${modes.map(m => `<option value="${escapeHtml(m.value)}"${m.value===h2h.mode?" selected":""}>${escapeHtml(m.label)}</option>`).join("")}
+          </select>
+        </span>
 
-        <span class="sep">•</span>
-        <span>Players: <strong>${playersCount}</strong></span>
       </div>
     `);
 
@@ -1986,36 +2003,177 @@ function renderHeadToHeadDominance() {
       h2h.sort = { col: null, dir: null };
       render();
     });
+
+    document.getElementById("h2hModeSelect")?.addEventListener("change", (e) => {
+      h2h.mode = e.target.value;
+      h2h.expandedPlayers.clear();
+      h2h.sort = { col: null, dir: null }; // optional, matches how you reset on year change
+      render();
+    });
   }
 
   function aggregateCollapsed() {
     const yearFilter = h2h.selectedYear;
-    const rows = yearFilter === "All" ? h2h.rows : h2h.rows.filter((r) => r.year === yearFilter);
+    const mode = h2h.mode || "singles_opp";
+
+    // Filter year first
+    let rows = yearFilter === "All" ? h2h.rows : h2h.rows.filter((r) => r.year === yearFilter);
+
+    // Mode-specific format filter
+    if (mode === "singles_opp") {
+      rows = rows.filter((r) => String(r.format).toLowerCase() === "singles");
+    } else {
+      rows = rows.filter((r) => String(r.format).toLowerCase() === "fourball");
+    }
 
     const byPlayer = new Map();
-    for (const r of rows) {
-      if (!byPlayer.has(r.player)) {
-        byPlayer.set(r.player, { player: r.player, w: 0, l: 0, h: 0, points: 0, ptsdiff: 0, opp: new Map() });
-      }
-      const p = byPlayer.get(r.player);
-      p.w += r.w || 0;
-      p.l += r.l || 0;
-      p.h += r.h || 0;
-      p.points += r.points || 0;
-      p.ptsdiff += r.ptsdiff || 0;
 
-      if (r.opponent) {
-        if (!p.opp.has(r.opponent)) p.opp.set(r.opponent, { opp: r.opponent, w: 0, l: 0, h: 0, points: 0, ptsdiff: 0 });
-        const o = p.opp.get(r.opponent);
-        o.w += r.w || 0;
-        o.l += r.l || 0;
-        o.h += r.h || 0;
-        o.points += r.points || 0;
-        o.ptsdiff += r.ptsdiff || 0;
+    function ensurePlayer(playerName) {
+      if (!byPlayer.has(playerName)) {
+        byPlayer.set(playerName, {
+          player: playerName,
+          w: 0, l: 0, h: 0,
+          points: 0,
+          ptsdiff: 0,
+          opp: new Map(), // key => opponent OR partner label
+        });
+      }
+      return byPlayer.get(playerName);
+    }
+
+    function ensureOpp(pObj, keyLabel) {
+      if (!pObj.opp.has(keyLabel)) {
+        pObj.opp.set(keyLabel, { opp: keyLabel, w: 0, l: 0, h: 0, points: 0, ptsdiff: 0 });
+      }
+      return pObj.opp.get(keyLabel);
+    }
+
+    function addPct(obj) {
+      const denom = (obj.w || 0) + (obj.l || 0) + (obj.h || 0);
+      obj.ptspct = denom > 0 ? (obj.points || 0) / denom : 0;
+    }
+
+    // ----- Mode 1: Singles vs Opponent (your original logic) -----
+    if (mode === "singles_opp") {
+      for (const r of rows) {
+        const p = ensurePlayer(r.player);
+        p.w += r.w || 0;
+        p.l += r.l || 0;
+        p.h += r.h || 0;
+        p.points += r.points || 0;
+        p.ptsdiff += r.ptsdiff || 0;
+
+        if (r.opponent) {
+          const o = ensureOpp(p, r.opponent);
+          o.w += r.w || 0;
+          o.l += r.l || 0;
+          o.h += r.h || 0;
+          o.points += r.points || 0;
+          o.ptsdiff += r.ptsdiff || 0;
+        }
+      }
+
+      const out = Array.from(byPlayer.values());
+      for (const p of out) {
+        addPct(p);
+        for (const o of p.opp.values()) addPct(o);
+      }
+      return out;
+    }
+
+    // For fourball modes we need grouping by Match_ID
+    const byMatch = new Map();
+    for (const r of rows) {
+      const key = r.matchId || "";
+      if (!key) continue;
+      if (!byMatch.has(key)) byMatch.set(key, []);
+      byMatch.get(key).push(r);
+    }
+
+    // ----- Mode 2: Fourball vs Opponent -----
+    if (mode === "fourball_opp") {
+      for (const matchRows of byMatch.values()) {
+        const cali = matchRows.filter((x) => x.team === "Cali");
+        const tex  = matchRows.filter((x) => x.team === "Tex-Mex");
+
+        // For each row/player, create 2 opponent entries (the two players on other team)
+        for (const r of matchRows) {
+          const p = ensurePlayer(r.player);
+
+          // collapsed totals (NOT divided)
+          p.w += r.w || 0;
+          p.l += r.l || 0;
+          p.h += r.h || 0;
+          p.points += r.points || 0;
+          p.ptsdiff += r.ptsdiff || 0;
+
+          const oppList = (r.team === "Cali" ? tex : cali).map((x) => x.player).filter(Boolean);
+
+          for (const oppName of oppList) {
+            const o = ensureOpp(p, oppName);
+
+            // IMPORTANT per your decision:
+            // W/L/H are NOT divided by 2.
+            o.w += r.w || 0;
+            o.l += r.l || 0;
+            o.h += r.h || 0;
+            o.points += r.points || 0;
+
+            // Pts_Diff IS divided by 2 only in this mode’s expanded rows
+            o.ptsdiff += (r.ptsdiff || 0) / 2;
+          }
+        }
+      }
+
+      const out = Array.from(byPlayer.values());
+      for (const p of out) {
+        addPct(p);
+        for (const o of p.opp.values()) addPct(o);
+      }
+      return out;
+    }
+
+    // ----- Mode 3: Fourball with Partner -----
+    // Use r.partner if present; otherwise derive from the other same-team player in the Match_ID group
+    for (const matchRows of byMatch.values()) {
+      const cali = matchRows.filter((x) => x.team === "Cali");
+      const tex  = matchRows.filter((x) => x.team === "Tex-Mex");
+
+      function derivedPartner(r) {
+        const teamRows = r.team === "Cali" ? cali : tex;
+        const other = teamRows.find((x) => x.player && x.player !== r.player);
+        return other ? other.player : "";
+      }
+
+      for (const r of matchRows) {
+        const p = ensurePlayer(r.player);
+
+        // collapsed totals
+        p.w += r.w || 0;
+        p.l += r.l || 0;
+        p.h += r.h || 0;
+        p.points += r.points || 0;
+        p.ptsdiff += r.ptsdiff || 0;
+
+        const partnerName = (r.partner && r.partner.trim()) ? r.partner.trim() : derivedPartner(r);
+
+        if (partnerName) {
+          const o = ensureOpp(p, partnerName);
+          o.w += r.w || 0;
+          o.l += r.l || 0;
+          o.h += r.h || 0;
+          o.points += r.points || 0;
+          o.ptsdiff += r.ptsdiff || 0;
+        }
       }
     }
 
-    return Array.from(byPlayer.values());
+    const out = Array.from(byPlayer.values());
+    for (const p of out) {
+      addPct(p);
+      for (const o of p.opp.values()) addPct(o);
+    }
+    return out;
   }
 
   function applyCollapsedSort(rows) {
@@ -2100,11 +2258,12 @@ function renderHeadToHeadDominance() {
         if (isOpen) {
           const oppRows = Array.from(p.opp.values())
             .sort((a, b) => cmp(a.ptsdiff, b.ptsdiff) * -1 || cmp(a.opp, b.opp));
+          const prefix = (h2h.mode === "fourball_partner") ? "with" : "vs.";
 
           for (const o of oppRows) {
             rowsHtml.push(`
               <tr class="year-row">
-                <td>vs. ${escapeHtml(o.opp)}</td>
+                <td title="${escapeHtml(`${prefix} ${o.opp}`)}">${escapeHtml(`${prefix} ${o.opp}`)}</td>
                 <td class="center">${fmtInt(o.w)}</td>
                 <td class="center">${fmtInt(o.l)}</td>
                 <td class="center">${fmtInt(o.h)}</td>
