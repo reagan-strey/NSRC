@@ -39,6 +39,12 @@ body {
   gap: 12px;
 }
 
+.topbar-actions{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
 .app-title {
   margin: 0;
   font-size: clamp(18px, 3.2vw, 24px);
@@ -55,6 +61,10 @@ body {
   font-size: 20px;
   line-height: 1;
 }
+
+#refreshBtn[hidden] { display: none !important; }
+#refreshBtn:disabled { opacity: 0.55; cursor: default; }
+
 
 /* Hide old controls row */
 .controls { display: none; }
@@ -502,4 +512,34 @@ tr.year-row td:first-child { padding-left: 10px; }
   background: rgba(255, 80, 80, 0.55);
   color: #ffffff;
   font-weight: 800;
+}
+
+/* =========================
+   Intro / Loading Video
+   ========================= */
+:root {
+  --intro-video-width: 320px; /* ✅ TWEAK SIZE HERE */
+}
+
+.intro-overlay {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  display: none;            /* default OFF */
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  pointer-events: none;     /* overlay won't block taps when hidden */
+}
+
+.intro-overlay.is-active {
+  display: flex;            /* ON */
+  pointer-events: auto;
+}
+
+.intro-video {
+  width: var(--intro-video-width);
+  max-width: 86vw;
+  height: auto;
+  border-radius: 14px;
 }

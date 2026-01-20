@@ -16,14 +16,31 @@
   </head>
 
   <body>
+    <!-- Intro / Loading Video Overlay -->
+    <div id="introOverlay" class="intro-overlay" hidden>
+      <video
+        id="introVideo"
+        class="intro-video"
+        src="img/Loading_Video.mp4"
+        muted
+        playsinline
+        preload="auto"
+      ></video>
+    </div>
+
     <!-- Top App Bar -->
     <header class="topbar" id="topbar">
       <div class="topbar-row">
         <h1 class="app-title" id="viewTitle">NSRC</h1>
 
-        <button id="menuBtn" class="icon-btn" type="button" aria-label="Open menu" aria-expanded="false">
-          ☰
-        </button>
+        <div class="topbar-actions">
+          <button id="refreshBtn" class="icon-btn" type="button" aria-label="Refresh current scoreboard" title="Refresh">
+            ↻
+          </button>
+          <button id="menuBtn" class="icon-btn" type="button" aria-label="Open menu" aria-expanded="false">
+            ☰
+          </button>
+        </div>
       </div>
 
       <!-- View-specific controls render here -->

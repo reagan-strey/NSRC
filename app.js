@@ -1,21 +1,99 @@
-/* Latest file as of 1.14.2026 at 1037pm */
+/* Latest file as of 1.19.2026 at 605pm */
 
 /***********************
  * CONFIG: CSV URLS
  ***********************/
 const CSV = {
+  masterTeamResults:
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHHJf5JjoRNkO4wkTzgq_Uf4Wcye3HOghJ3HePez8gfnaeASLGvHqrsECYRQGSVfANqcxqL59KgkmL/pub?gid=1987375919&single=true&output=csv",
+  
+  masterPlayerResults:
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHHJf5JjoRNkO4wkTzgq_Uf4Wcye3HOghJ3HePez8gfnaeASLGvHqrsECYRQGSVfANqcxqL59KgkmL/pub?gid=1256859448&single=true&output=csv",
+  
   masterMatchLog:
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHHJf5JjoRNkO4wkTzgq_Uf4Wcye3HOghJ3HePez8gfnaeASLGvHqrsECYRQGSVfANqcxqL59KgkmL/pub?gid=0&single=true&output=csv",
 
   currentMatchLog:
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7ur2CnLVDH6aYXW8aIRuYnRJ2276zgIeGiJGCJ3o4PRhuD4g8cHgAefZ-SHQwnWPm38K72eQOQ3yW/pub?gid=458254007&single=true&output=csv",
-    
-  masterPlayerResults:
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHHJf5JjoRNkO4wkTzgq_Uf4Wcye3HOghJ3HePez8gfnaeASLGvHqrsECYRQGSVfANqcxqL59KgkmL/pub?gid=1256859448&single=true&output=csv",
-
-  masterTeamResults:
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHHJf5JjoRNkO4wkTzgq_Uf4Wcye3HOghJ3HePez8gfnaeASLGvHqrsECYRQGSVfANqcxqL59KgkmL/pub?gid=1987375919&single=true&output=csv",
 };
+
+/***********************
+ * Master CSV cache (load once)
+ ***********************/
+const masterCache = {
+  teamResultsRaw: null,     // parsed rows from Master Team Results CSV
+  playerResultsRaw: null,   // parsed rows from Master Player Results CSV
+  matchLogRaw: null,        // parsed rows from Master Match Log CSV
+};
+
+async function getMasterTeamResultsRaw() {
+  if (masterCache.teamResultsRaw) return masterCache.teamResultsRaw;
+
+  const res = await fetch(CSV.masterTeamResults); // allow normal browser caching
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const csvText = await res.text();
+
+  const parsed = Papa.parse(csvText, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (h) => h.trim(),
+    transform: (val) => (typeof val === "string" ? val.trim() : val),
+  });
+
+  if (parsed.errors?.length) {
+    console.error(parsed.errors);
+    throw new Error("CSV parse error");
+  }
+
+  masterCache.teamResultsRaw = parsed.data;
+  return masterCache.teamResultsRaw;
+}
+
+async function getMasterPlayerResultsRaw() {
+  if (masterCache.playerResultsRaw) return masterCache.playerResultsRaw;
+
+  const res = await fetch(CSV.masterPlayerResults); // allow normal browser caching
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const csvText = await res.text();
+
+  const parsed = Papa.parse(csvText, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (h) => h.trim(),
+    transform: (val) => (typeof val === "string" ? val.trim() : val),
+  });
+
+  if (parsed.errors?.length) {
+    console.error(parsed.errors);
+    throw new Error("CSV parse error");
+  }
+
+  masterCache.playerResultsRaw = parsed.data;
+  return masterCache.playerResultsRaw;
+}
+
+async function getMasterMatchLogRaw() {
+  if (masterCache.matchLogRaw) return masterCache.matchLogRaw;
+
+  const res = await fetch(CSV.masterMatchLog); // allow normal browser caching
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const csvText = await res.text();
+
+  const parsed = Papa.parse(csvText, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (h) => h.trim(),
+    transform: (val) => (typeof val === "string" ? val.trim() : val),
+  });
+
+  if (parsed.errors?.length) {
+    console.error(parsed.errors);
+    throw new Error("CSV parse error");
+  }
+
+  masterCache.matchLogRaw = parsed.data;
+  return masterCache.matchLogRaw;
+}
 
 /***********************
  * IMAGES (static lists)
@@ -90,6 +168,7 @@ const viewBodyEl = document.getElementById("viewBody");
 const statusEl = document.getElementById("status");
 
 const menuBtn = document.getElementById("menuBtn");
+const refreshBtn = document.getElementById("refreshBtn");
 const closeBtn = document.getElementById("closeBtn");
 const overlay = document.getElementById("overlay");
 const drawer = document.getElementById("drawer");
@@ -99,15 +178,14 @@ const drawerNav = document.getElementById("drawerNav");
  * ROUTER / NAV
  ***********************/
 const VIEWS = [
-  { id: "team-results", title: "Team Results" },
-  { id: "player-results", title: "Player Results" },
-  { id: "tournament-view", title: "Scoreboard (History)" },
-  { id: "current-scoreboard", title: "Current Year Scoreboard" },
+  { id: "team-results", title: "Team Results by Year" },
+  { id: "player-results", title: "Team Results by Player" },
+  { id: "tournament-view", title: "Historical Scoreboard" },
+  { id: "current-scoreboard", title: "LIVE Scoreboard" },
+  { id: "nemesis", title: "Head-to-Head" },
   { id: "player-match-history", title: "Player Match History" },
-  { id: "nemesis", title: "Head-to-Head Dominance" },
-  { id: "player-bios", title: "Player Profile" },
   { id: "logos-maps", title: "Logos and Course Maps" },
-  { id: "genai-analysis", title: "GenAI Analysis" },
+  { id: "genai-analysis", title: "GenAI Analysis and Predictions" },
 ];
 
 let currentRoute = "team-results";     // sets the default view
@@ -125,6 +203,125 @@ const cache = {
     current: { loaded: false, promise: null, rows: [], byYear: new Map() },
   },
 };
+
+/***********************
+ * Current Scoreboard refresh + polling
+ ***********************/
+let currentScoreboardPollTimer = null;
+
+function stopCurrentScoreboardPolling() {
+  if (currentScoreboardPollTimer) {
+    clearInterval(currentScoreboardPollTimer);
+    currentScoreboardPollTimer = null;
+  }
+}
+
+function startCurrentScoreboardPolling() {
+  stopCurrentScoreboardPolling();
+  currentScoreboardPollTimer = setInterval(() => {
+    // Only poll while user is actually on the Current Scoreboard view
+    if (currentRoute === "current-scoreboard") {
+      refreshCurrentScoreboard({ silent: true });
+    }
+  }, 30000); // 30 seconds
+}
+
+// ---------- replacement refreshCurrentScoreboard ----------
+let _currentRefreshInFlight = false;
+
+async function refreshCurrentScoreboard({ silent = false } = {}) {
+  // Safety: ensure bucket exists
+  if (!cache.matchLogFull || !cache.matchLogFull.current) return;
+  const bucket = cache.matchLogFull.current;
+
+  // Avoid concurrent refreshes
+  if (_currentRefreshInFlight) return;
+  _currentRefreshInFlight = true;
+
+  // UI: show quick refresh status if not silent
+  if (!silent) {
+    setStatusHTML(`<div class="meta"><span>Refreshing current scoreboard…</span></div>`);
+    if (refreshBtn) refreshBtn.disabled = true;
+  }
+
+  // Stop polling while we run manual refresh
+  stopCurrentScoreboardPolling();
+
+  try {
+    // Build cache-busted URL to avoid CDN / intermediate caching
+    const url = `${CSV.currentMatchLog}${CSV.currentMatchLog.includes('?') ? '&' : '?'}_=${Date.now()}`;
+
+    // Always fetch fresh for current scoreboard
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const csvText = await res.text();
+
+    const parsed = Papa.parse(csvText, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (h) => h.trim(),
+      transform: (val) => (typeof val === "string" ? val.trim() : val),
+    });
+
+    if (parsed.errors?.length) {
+      console.error("CSV parse errors:", parsed.errors);
+      throw new Error("CSV parse error");
+    }
+
+    const rawRows = parsed.data;
+
+    // Build rows exactly the same way ensureMatchLogFullLoaded("current") would
+    const rows = rawRows
+      .filter((r) => r.Year && r.Team && r.Player)
+      .map((r) => ({
+        year: Number(String(r.Year).trim()),
+        trip: String(r.Trip || "").trim(),
+        round: Number(String(r.Round || "").trim()),
+        format: String(r.Format || "").trim(),
+        course: String(r.Course || "").trim(),
+        match: Number(String(r.Match || "").trim()),
+        matchId: String(r.Match_ID || r.MatchId || "").trim(),
+        player: String(r.Player || "").trim(),
+        team: String(r.Team || "").trim(),
+        strokes: String(r.Strokes ?? "").trim(),
+        opponent: String(r.Opponent || "").trim(),
+        result: String(r.Result || "").trim(),
+        points: toNumber(r.Points),
+        w: toNumber(r.W),
+        l: toNumber(r.L),
+        h: toNumber(r.H),
+        ptsdiff: toNumber(r.Pts_Diff),
+      }))
+      .filter((r) => Number.isFinite(r.year));
+
+    // Update bucket immediately so subsequent calls use fresh data
+    bucket.rows = rows;
+    bucket.byYear.clear();
+    for (const r of bucket.rows) {
+      if (!bucket.byYear.has(r.year)) bucket.byYear.set(r.year, []);
+      bucket.byYear.get(r.year).push(r);
+    }
+    bucket.loaded = true;
+    bucket.promise = null;
+
+    // Clear expansions so UI re-renders cleanly (optional)
+    if (state.csb && state.csb.expandedKeys) state.csb.expandedKeys.clear();
+
+    // Re-render current scoreboard UI (this will use the freshly-updated bucket)
+    renderScoreboard("current");
+  } catch (err) {
+    console.error("refreshCurrentScoreboard error:", err);
+    if (!silent) setStatusHTML(`<div class="meta"><span>Refresh failed — try again.</span></div>`);
+  } finally {
+    _currentRefreshInFlight = false;
+    if (refreshBtn) {
+      refreshBtn.disabled = false;
+    }
+    // resume polling if still on the current view
+    if (currentRoute === "current-scoreboard") startCurrentScoreboardPolling();
+  }
+}
+
 
 /***********************
  * View state
@@ -227,6 +424,17 @@ drawerNav.addEventListener("click", (e) => {
   closeDrawer();
 });
 
+if (refreshBtn) {
+  refreshBtn.addEventListener("click", async () => {
+    refreshBtn.disabled = true;
+    try {
+      await refreshCurrentScoreboard({ silent: false });
+    } finally {
+      setTimeout(() => { refreshBtn.disabled = false; }, 500);
+    }
+  });
+}
+
 /***********************
  * Router
  ***********************/
@@ -246,6 +454,10 @@ function renderUnderConstruction(title) {
 
 function setRoute(routeId) {
   currentRoute = routeId;
+  // Show refresh ONLY on Current Scoreboard
+  if (refreshBtn) {
+    refreshBtn.hidden = (routeId !== "current-scoreboard");
+  }
   buildDrawer();
 
   viewControlsEl.innerHTML = "";
@@ -254,6 +466,10 @@ function setRoute(routeId) {
 
   const view = VIEWS.find((v) => v.id === routeId);
   viewTitleEl.textContent = view ? view.title : "NSRC";
+ 
+  // Start/stop polling depending on route
+  if (routeId === "current-scoreboard") startCurrentScoreboardPolling();
+  else stopCurrentScoreboardPolling();
 
   switch (routeId) {
     case "player-match-history":
@@ -289,6 +505,14 @@ function setRoute(routeId) {
 function toNumber(x) {
   const n = Number(String(x ?? "").trim());
   return Number.isFinite(n) ? n : 0;
+}
+
+function pick(r, ...keys) {
+  for (const k of keys) {
+    const v = r?.[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+  }
+  return "";
 }
 
 function fmtInt(v) {
@@ -330,36 +554,49 @@ function sortIndicator(viewSort, col) {
  * Match log team index (PMH uses this)
  ***********************/
 function ensureMatchLogLoaded() {
-  if (cache.matchLogLoaded) return Promise.resolve(cache.matchLogRows);
+  // Only treat as "loaded" if we actually have rows
+  if (cache.matchLogLoaded && Array.isArray(cache.matchLogRows) && cache.matchLogRows.length) {
+    return Promise.resolve(cache.matchLogRows);
+  }
+
+  // If a load is in progress (or previously failed but not cleared), return it
   if (cache.matchLogPromise) return cache.matchLogPromise;
 
   cache.matchLogPromise = (async () => {
-    const res = await fetch(CSV.masterMatchLog, { cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const csvText = await res.text();
+    try {
+      const rawRows = await getMasterMatchLogRaw();
 
-    const parsed = Papa.parse(csvText, {
-      header: true,
-      skipEmptyLines: true,
-      transformHeader: (h) => h.trim(),
-      transform: (val) => (typeof val === "string" ? val.trim() : val),
-    });
+      const rows = rawRows
+        .filter((r) => pick(r, "Player", "player") && pick(r, "Year", "year"))
+        .map((r) => ({
+          player: String(pick(r, "Player", "player")).trim(),
+          year: Number(String(pick(r, "Year", "year")).trim()),
+          team: String(pick(r, "Team", "team")).trim(),
+        }))
+        .filter((r) => r.player && Number.isFinite(r.year));
 
-    if (parsed.errors?.length) throw new Error("CSV parse error");
+      // If we somehow built zero rows, treat as failure so we can retry later
+      if (!rows.length) throw new Error("ensureMatchLogLoaded: built 0 rows");
 
-    cache.matchLogRows = parsed.data
-      .filter((r) => r.Player && r.Year)
-      .map((r) => ({
-        player: r.Player,
-        year: Number(String(r.Year).trim()),
-        team: (r.Team || "").trim(),
-      }))
-      .filter((r) => Number.isFinite(r.year));
+      cache.matchLogRows = rows;
 
-    buildTeamByPlayerYearIndex(cache.matchLogRows);
+      // Build the per-player-year team lookup
+      buildTeamByPlayerYearIndex(cache.matchLogRows);
 
-    cache.matchLogLoaded = true;
-    return cache.matchLogRows;
+      cache.matchLogLoaded = true;
+      return cache.matchLogRows;
+    } catch (e) {
+      // IMPORTANT: allow retries later (Patch #4 will call these in background)
+      console.error("ensureMatchLogLoaded failed:", e);
+      cache.matchLogLoaded = false;
+      cache.matchLogRows = [];
+      cache.teamByPlayerYear = cache.teamByPlayerYear || new Map();
+      cache.teamByPlayerYear.clear();
+      throw e;
+    } finally {
+      // CRITICAL: never leave a rejected promise stuck in cache
+      cache.matchLogPromise = null;
+    }
   })();
 
   return cache.matchLogPromise;
@@ -416,56 +653,81 @@ function ensureMatchLogFullLoaded(sourceKey = "master") {
   const url = sourceKey === "current" ? CSV.currentMatchLog : CSV.masterMatchLog;
 
   bucket.promise = (async () => {
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const csvText = await res.text();
+    try {
+      let rawRows;
 
-    const parsed = Papa.parse(csvText, {
-      header: true,
-      skipEmptyLines: true,
-      transformHeader: (h) => h.trim(),
-      transform: (val) => (typeof val === "string" ? val.trim() : val),
-    });
+      if (sourceKey === "current") {
+        // keep current scoreboard real-time
+        const res = await fetch(CSV.currentMatchLog, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const csvText = await res.text();
 
-    if (parsed.errors?.length) {
-      console.error(parsed.errors);
-      throw new Error("CSV parse error");
+        const parsed = Papa.parse(csvText, {
+          header: true,
+          skipEmptyLines: true,
+          transformHeader: (h) => h.trim(),
+          transform: (val) => (typeof val === "string" ? val.trim() : val),
+        });
+
+        if (parsed.errors?.length) {
+          console.error(parsed.errors);
+          throw new Error("CSV parse error");
+        }
+
+        rawRows = parsed.data;
+      } else {
+        // master match log: cache after first load
+        rawRows = await getMasterMatchLogRaw();
+      }
+
+      const rows = rawRows
+        .filter((r) => r.Year && r.Team && r.Player)
+        .map((r) => ({
+          year: Number(String(r.Year).trim()),
+          trip: String(r.Trip || "").trim(),
+          round: Number(String(r.Round || "").trim()),
+          format: String(r.Format || "").trim(),
+          course: String(r.Course || "").trim(),
+          match: Number(String(r.Match || "").trim()),
+          matchId: String(r.Match_ID || r.MatchId || "").trim(),
+          player: String(r.Player || "").trim(),
+          team: String(r.Team || "").trim(),
+          strokes: String(r.Strokes ?? "").trim(),
+          opponent: String(r.Opponent || "").trim(),
+          result: String(r.Result || "").trim(),
+          points: toNumber(r.Points),
+          w: toNumber(r.W),
+          l: toNumber(r.L),
+          h: toNumber(r.H),
+          ptsdiff: toNumber(r.Pts_Diff),
+        }))
+        .filter((r) => Number.isFinite(r.year));
+
+      if (!rows.length) throw new Error(`ensureMatchLogFullLoaded(${sourceKey}): built 0 rows`);
+
+      bucket.rows = rows;
+
+      bucket.byYear.clear();
+      for (const r of bucket.rows) {
+        if (!bucket.byYear.has(r.year)) bucket.byYear.set(r.year, []);
+        bucket.byYear.get(r.year).push(r);
+      }
+
+      bucket.loaded = true;
+      return bucket.rows;
+    } catch (e) {
+      console.error(`ensureMatchLogFullLoaded(${sourceKey}) failed:`, e);
+      bucket.loaded = false;
+      bucket.rows = [];
+      bucket.byYear.clear();
+      throw e;
+    } finally {
+      // CRITICAL: allow retry if there was a failure
+      bucket.promise = null;
     }
-
-    bucket.rows = parsed.data
-      .filter((r) => r.Year && r.Team && r.Player)
-      .map((r) => ({
-        year: Number(String(r.Year).trim()),
-        trip: String(r.Trip || "").trim(),
-        round: Number(String(r.Round || "").trim()),
-        format: String(r.Format || "").trim(),
-        course: String(r.Course || "").trim(),
-        match: Number(String(r.Match || "").trim()),
-        matchId: String(r.Match_ID || r.MatchId || "").trim(),
-        player: String(r.Player || "").trim(),
-        team: String(r.Team || "").trim(),
-        strokes: String(r.Strokes ?? "").trim(),
-        opponent: String(r.Opponent || "").trim(),
-        result: String(r.Result || "").trim(),
-        points: toNumber(r.Points),
-        w: toNumber(r.W),
-        l: toNumber(r.L),
-        h: toNumber(r.H),
-        ptsdiff: toNumber(r.Pts_Diff),
-      }))
-      .filter((r) => Number.isFinite(r.year));
-
-    bucket.byYear.clear();
-    for (const r of bucket.rows) {
-      if (!bucket.byYear.has(r.year)) bucket.byYear.set(r.year, []);
-      bucket.byYear.get(r.year).push(r);
-    }
-
-    bucket.loaded = true;
-    return bucket.rows;
   })();
-
   return bucket.promise;
+
 }
 
 /***********************
@@ -571,27 +833,9 @@ function renderPlayerResults() {
     setStatusHTML(`<div class="meta"><span>Loading Player Results…</span></div>`);
     tbodyEl.innerHTML = "";
 
-    const res = await fetch(CSV.masterPlayerResults, { cache: "no-store" });
-    if (!res.ok) {
-      setStatusHTML(`<div class="meta"><span>Failed to load Player Results.</span></div>`);
-      return;
-    }
-    const csvText = await res.text();
+    const parsedRows = await getMasterPlayerResultsRaw();
 
-    const parsed = Papa.parse(csvText, {
-      header: true,
-      skipEmptyLines: true,
-      transformHeader: (h) => h.trim(),
-      transform: (val) => (typeof val === "string" ? val.trim() : val),
-    });
-
-    if (parsed.errors?.length) {
-      console.error(parsed.errors);
-      setStatusHTML(`<div class="meta"><span>Failed to parse Player Results.</span></div>`);
-      return;
-    }
-
-    pr.rows = parsed.data;
+    pr.rows = parsedRows;
     pr.expandedPlayers.clear();
 
     // Years (desc) + Trip lookup by Year
@@ -889,42 +1133,87 @@ function renderPlayerMatchHistory() {
   }
 
   function extractYear(rawRow) {
-    const y = Number(String(rawRow.Year ?? "").trim());
+    const y = Number(String(pick(rawRow, "Year", "year")).trim());
     return Number.isFinite(y) ? y : null;
   }
 
   async function loadData() {
     setStatusHTML(`<div class="meta"><span>Loading data…</span></div>`);
     tbodyEl.innerHTML = "";
+    // If we already have data cached in state, just re-render immediately
+    if (pmh.allRows && pmh.allRows.length) {
+      render();
+      return;
+    }
 
-    try {
-      await ensureMatchLogLoaded();
+        try {
+          await ensureMatchLogLoaded();
 
-      const res = await fetch(CSV.masterMatchLog, { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const csvText = await res.text();
+          const rawRows = await getMasterMatchLogRaw();
 
-      const parsed = Papa.parse(csvText, {
-        header: true,
-        skipEmptyLines: true,
-        transformHeader: (h) => h.trim(),
-        transform: (val) => (typeof val === "string" ? val.trim() : val),
-      });
+          // Build pmh.allRows from master match log; accept different header casings
+          // and derive a human-friendly "result" if it's not explicitly present.
+          pmh.allRows = rawRows
+            .filter((r) => {
+              // Must have player + format and at least one of: explicit result OR w/l/h/points
+              const hasPlayer = !!pick(r, "Player", "player");
+              const hasFormat = !!pick(r, "Format", "format");
+              const hasResultCols = !!pick(r, "Result", "result") ||
+                                    pick(r, "w", "W") !== "" ||
+                                    pick(r, "l", "L") !== "" ||
+                                    pick(r, "h", "H") !== "" ||
+                                    pick(r, "Points", "points") !== "";
+              return hasPlayer && hasFormat && hasResultCols;
+            })
+            .map((r) => {
+              // Normalized access helpers
+              const player = String(pick(r, "Player", "player")).trim();
+              const format = String(pick(r, "Format", "format")).trim();
 
-      if (parsed.errors?.length) throw new Error("CSV parse error");
+              // numeric W/L/H if present
+              const w = Number.isFinite(Number(pick(r, "w", "W"))) ? Number(pick(r, "w", "W")) : 0;
+              const l = Number.isFinite(Number(pick(r, "l", "L"))) ? Number(pick(r, "l", "L")) : 0;
+              const h = Number.isFinite(Number(pick(r, "h", "H"))) ? Number(pick(r, "h", "H")) : 0;
 
-      pmh.allRows = parsed.data
-        .filter((r) => r.Player && r.Format && r.Result)
-        .map((r) => {
-          const points = r.Points === "" || r.Points == null ? null : Number(r.Points);
-          return {
-            player: r.Player,
-            format: r.Format,
-            result: r.Result,
-            points: Number.isFinite(points) ? points : null,
-            year: extractYear(r),
-          };
-        });
+              // points might be "" / null / number
+              const pointsRaw = pick(r, "Points", "points");
+              const pointsVal = pointsRaw === "" || pointsRaw === null ? null : Number(pointsRaw);
+              const points = Number.isFinite(pointsVal) ? pointsVal : null;
+
+              // Result precedence:
+              // 1) explicit Result column if present
+              // 2) derive from w/l/h
+              // 3) fallback to points sign (positive -> Win, 0 -> Halved, negative -> Loss)
+              let result = pick(r, "Result", "result") || "";
+              if (!result) {
+                if (w > 0) result = "Win";
+                else if (l > 0) result = "Loss";
+                else if (h > 0) result = "Halved";
+                else if (points != null) {
+                  if (points > 0) result = "Win";
+                  else if (points === 0) result = "Halved";
+                  else result = "Loss";
+                } else {
+                  result = "";
+                }
+              }
+
+              // Final points value: prefer explicit points if numeric; otherwise,
+              // if we have a derived result but no points, compute standard points.
+              let finalPoints = null;
+              if (Number.isFinite(points)) finalPoints = points;
+              else if (result === "Win") finalPoints = 1;
+              else if (result === "Halved") finalPoints = 0.5;
+              else if (result === "Loss") finalPoints = 0;
+
+              return {
+                player,
+                format,
+                result,
+                points: finalPoints,
+                year: extractYear(r),
+              };
+            });
 
       const yearSet = new Set(pmh.allRows.map((r) => r.year).filter((y) => Number.isFinite(y)));
       pmh.availableYears = Array.from(yearSet);
@@ -1319,24 +1608,10 @@ function renderTeamResults() {
     tbodyEl.innerHTML = "";
 
     try {
-      const res = await fetch(CSV.masterTeamResults, { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const csvText = await res.text();
-
-      const parsed = Papa.parse(csvText, {
-        header: true,
-        skipEmptyLines: true,
-        transformHeader: (h) => h.trim(),
-        transform: (val) => (typeof val === "string" ? val.trim() : val),
-      });
-
-      if (parsed.errors?.length) {
-        console.error(parsed.errors);
-        throw new Error("CSV parse error");
-      }
+      const parsedRows = await getMasterTeamResultsRaw();
 
       // Expect columns: Year, Trip, Location, Winning Team, Cali Points, Tex-Mex Points
-      tr.rows = parsed.data
+      tr.rows = parsedRows
         .map((r) => {
           const year = Number(String(r.Year ?? "").trim());
           if (!Number.isFinite(year)) return null;
@@ -1856,20 +2131,10 @@ async function ensureH2HLoaded() {
   const h2h = state.h2h;
   if (h2h.rows.length) return;
 
-  const res = await fetch(CSV.masterMatchLog, { cache: "no-store" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const csvText = await res.text();
+  const raw = await getMasterMatchLogRaw();
 
-  const parsed = Papa.parse(csvText, {
-    header: true,
-    skipEmptyLines: true,
-    transformHeader: (h) => h.trim(),
-    transform: (val) => (typeof val === "string" ? val.trim() : val),
-  });
-
-  if (parsed.errors?.length) throw new Error("CSV parse error");
-
-  const raw = parsed.data
+  // Normalize raw match log rows into H2H-friendly objects
+  const normalized = raw
     .filter((r) => r.Player && r.Year && String(r.Format || "").trim())
     .map((r) => {
       const year = Number(String(r.Year).trim());
@@ -1877,22 +2142,41 @@ async function ensureH2HLoaded() {
 
       const match = Number(String(r.Match || "").trim());
       const round = Number(String(r.Round || "").trim());
-      const matchId = String(r.Match_ID || r.MatchId || `${year}-${round}-${match}`).trim();
+      const matchId = String(
+        r.Match_ID || r.MatchId || `${year}-${round}-${match}`
+      ).trim();
 
-      const format = String(r.Format || "").trim();          // ✅ NEW
-      const team = String(r.Team || "").trim();              // ✅ NEW
-      const partner = String(r.Partner || "").trim();        // ✅ NEW (your new column)
-
+      const format = String(r.Format || "").trim();
+      const team = String(r.Team || "").trim();
+      const partner = String(r.Partner || "").trim();
       const opponent = String(r.Opponent || "").trim();
+
       const w = toNumber(r.W);
       const l = toNumber(r.L);
       const h = toNumber(r.H);
       const points = toNumber(r.Points);
       const ptsdiff = toNumber(r.Pts_Diff);
 
-      return { year, player, opponent, partner, team, format, w, l, h, points, ptsdiff, matchId };
+      return {
+        year,
+        player,
+        opponent,
+        partner,
+        team,
+        format,
+        w,
+        l,
+        h,
+        points,
+        ptsdiff,
+        matchId,
+      };
     })
     .filter((r) => Number.isFinite(r.year) && r.player);
+
+  // Use normalized data from here forward
+  raw.length = 0;
+  raw.push(...normalized);
 
   // Derive Opponent from Match_ID if missing
   const byMatch = new Map();
@@ -2297,7 +2581,116 @@ function renderHeadToHeadDominance() {
 }
 
 /***********************
+ * PATCH #4: Background warm-up (prefetch derived indexes)
+ ***********************/
+/***********************
+ * Intro video toggle
+ * (set false to disable instantly)
+ ***********************/
+const ENABLE_INTRO_VIDEO = true;
+const INTRO_MAX_WAIT_MS = 7500; // safety: never block longer than this
+
+let _prefetchStarted = false;
+
+async function warmupMasterData() {
+  // Load master CSVs in parallel (browser cache allowed)
+  await Promise.all([
+    getMasterTeamResultsRaw(),
+    getMasterPlayerResultsRaw(),
+    getMasterMatchLogRaw(),
+  ]);
+
+  // Build derived indexes used across views
+  await ensureMatchLogLoaded();
+  await ensureMatchLogFullLoaded("master");
+  await ensureH2HLoaded();
+}
+
+
+function schedulePrefetch() {
+  if (_prefetchStarted) return;
+  _prefetchStarted = true;
+
+  const run = async () => {
+    try {
+      await warmupMasterData();
+    } catch (e) {
+      console.warn("Prefetch/warm-up failed:", e);
+    }
+  };
+
+  // Run when the browser is idle (or after a short delay)
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(() => run(), { timeout: 2000 });
+  } else {
+    setTimeout(() => run(), 250);
+  }
+}
+
+/***********************
  * INIT
  ***********************/
-buildDrawer();
-setRoute(currentRoute);
+function initApp() {
+  buildDrawer();
+  setRoute(currentRoute);     // default view (Team Results) uses currentRoute
+  schedulePrefetch();         // background warm-up for instant navigation later
+}
+
+function initWithIntro() {
+  const overlay = document.getElementById("introOverlay");
+  const video = document.getElementById("introVideo");
+  // ensure overlay starts hidden until we activate it
+  overlay.classList.remove("is-active");
+
+  // Easy ON/OFF switch
+  if (!ENABLE_INTRO_VIDEO || !overlay || !video) {
+    initApp();
+    return;
+  }
+
+  overlay.classList.add("is-active");
+
+  let videoDone = false;
+  let warmDone = false;
+  let timedOut = false;
+
+  const maybeProceed = () => {
+    // Proceed when video finished AND warm-up finished,
+    // OR if safety timeout triggers.
+    if ((videoDone && warmDone) || timedOut) {
+      overlay.classList.remove("is-active");
+      initApp();
+    }
+  };
+
+  // Start warm-up immediately (TRUE concurrent loading)
+  warmupMasterData()
+    .catch((e) => console.warn("Warmup failed:", e))
+    .finally(() => {
+      warmDone = true;
+      maybeProceed();
+    });
+
+  // Video events
+  const finishVideo = () => {
+    videoDone = true;
+    maybeProceed();
+  };
+
+  video.addEventListener("ended", finishVideo, { once: true });
+  video.addEventListener("error", finishVideo, { once: true });
+
+  // Autoplay attempt (muted + playsinline helps on iOS)
+  video.play().catch(() => {
+    // If autoplay is blocked, just treat as "done"
+    finishVideo();
+  });
+
+  // Safety timeout: never get stuck here
+  setTimeout(() => {
+    timedOut = true;
+    maybeProceed();
+  }, INTRO_MAX_WAIT_MS);
+}
+
+initWithIntro();
