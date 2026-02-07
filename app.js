@@ -1,4 +1,4 @@
-/* Latest file as of 1.19.2026 at 605pm */
+/* Latest file as of 2.7.2026 at 12pm */
 
 /***********************
  * CONFIG: CSV URLS
@@ -185,7 +185,8 @@ const VIEWS = [
   { id: "nemesis", title: "Head-to-Head" },
   { id: "player-match-history", title: "Player Match History" },
   { id: "logos-maps", title: "Logos and Course Maps" },
-  { id: "genai-analysis", title: "GenAI Analysis and Predictions" },
+  { id: "ai-analysis", title: "AI Analysis and Predictions" },
+  { id: "read-me", title: "Read Me" },
 ];
 
 let currentRoute = "team-results";     // sets the default view
@@ -377,6 +378,28 @@ const state = {
     mode: "logos", // "logos" or "courses"
     index: 0,
   },
+
+  ai: {
+    scenario: "Player Profile", // default per your request
+    style: "SportsCenter",
+
+    // Scenario: Year/Trip Summary
+    year: null, // will be set to max year on first render
+    trip: "All", // rendered based on year
+
+    // Scenario: Player Profile
+    player: "",
+
+    // Scenario: Singles Prediction
+    player1: "",
+    player2: "",
+
+    // Scenario: Fourball Prediction
+    ca1: "",
+    ca2: "",
+    tx1: "",
+    tx2: "",
+  },
 };
 
 
@@ -447,7 +470,33 @@ function renderUnderConstruction(title) {
   viewBodyEl.innerHTML = `
     <div class="hint" style="margin-top: 6px;">
       <strong>${escapeHtml(title)}</strong><br/>
-      View under construction.
+      <p>
+        This app is for all things NSRC including team and player results, detailed match results (since 2015), and live tournament scoring. Across all views, click on a row to show additional information. Filters and column sorting is also available.</p>
+        View overview:
+        <ul>
+          <li><b>Team Results by Year:</b> Displays the winning team and points for all history. Click on a year to display the Points by Round as well as the Points and Record by Player.</li>
+          <li><b>Team Results by Player:</b> Displays who’s been on the winning team the most. Click on a player to display results by year.</li>
+          <li><b>Historical Scoreboard:</b> Displays the round-by-round scores and match results for every year since 2015. Click on any round to display the individual matches.</li>
+          <li><b>LIVE Scoreboard:</b> Displays the live scoreboard and match results for the current year.</li>
+          <li><b>Head-to-Head:</b> Displays player aggregate points earned (or lost) and match results by format. Filter by Singles vs Opponent, Fourball vs Opponent, and Fourball with Partner. Click on any player to display individual opponents or partners.</li>
+          <li><b>Player Match History:</b> Displays match records for all players since 2015. Filter by Fourball, Singles, or Both formats. Click on any player to display match results by year.</li>
+          <li><b>Logos and Course Maps:</b> Self explanatory.</li>
+          <li><b>AI Analysis and Predictions:</b> Generate AI write-ups for (1) year summary, (2) player profiles, (3) Singles predictions, and (4) Fourball predictions. Choose between a SportsCenter version or a Locker-Room version.</li>
+        </ul>
+        You can always view on your PC or phone browser. For better viewing and easier access on your iPhone, you can add an app icon to your home screen by following these steps:
+        <ol>
+          <li>tap Share</li>
+          <li>tap More</li>
+          <li>tap "Add to Home Screen"</li>
+          <li>activate "Open as Web App"</li>
+          <li>tap "Add"</li>
+        </ol>
+        <b>Data:</b>
+        <ul>
+          <li>Total team Wins/Losses are known since 2002. Points by team are only known since 2015.</li>
+          <li>Full participants are available since 2014. Winning team members were pulled from the engraved trophy from 2002-2013. The only losing team member known for those years is either Adam or Grant.</li>
+          <li>Match details are only available beginning 2015. Strokes per match are available beginning 2018.</li>
+      </p>
     </div>
   `;
 }
@@ -492,6 +541,9 @@ function setRoute(routeId) {
       break;
     case "nemesis":
       renderHeadToHeadDominance();
+      break;
+    case "ai-analysis":
+      renderAIAnalysis();
       break;
     default:
       renderUnderConstruction(viewTitleEl.textContent);
@@ -2578,6 +2630,237 @@ function renderHeadToHeadDominance() {
   }
 
   render();
+}
+
+/***********************
+ * VIEW: AI Analysis and Predictions (UI only for now)
+ ***********************/
+async function renderAIAnalysis() {
+  const ai = state.ai;
+
+  // Load data we need for dropdown options (these should already be cached/fast in your app)
+  let teamRows = [];
+  let matchRows = [];
+  try {
+    teamRows = await getMasterTeamResultsRaw();
+  } catch (e) {
+    console.warn("AI view: could not load MasterTeamResults", e);
+  }
+  try {
+    matchRows = await getMasterMatchLogRaw();
+  } catch (e) {
+    console.warn("AI view: could not load MasterMatchLog", e);
+  }
+
+  // Build Year options from Master Team Results (preferred since it has Trip per year)
+  const years = Array.from(
+    new Set(
+      (teamRows || [])
+        .map((r) => Number(String(r.Year ?? "").trim()))
+        .filter((y) => Number.isFinite(y))
+    )
+  ).sort((a, b) => b - a);
+
+  const maxYear = years.length ? years[0] : null;
+
+  // Initialize default year (max year) the first time this view is visited
+  if (ai.year == null && maxYear != null) ai.year = maxYear;
+
+  // Resolve Trip from Team Results for selected year
+  let tripForYear = "All";
+  if (ai.year != null) {
+    const yr = Number(ai.year);
+    const row = (teamRows || []).find((r) => Number(String(r.Year ?? "").trim()) === yr);
+    if (row && row.Trip != null) {
+      const t = String(row.Trip).trim();
+      tripForYear = t || "All";
+    } else {
+      tripForYear = "All";
+    }
+  }
+  ai.trip = ai.year == null ? "All" : tripForYear;
+
+  // Build player list from Master Match Log (supports both raw and normalized keys)
+  const allPlayers = Array.from(
+    new Set(
+      (matchRows || [])
+        .map((r) => String((r.Player ?? r.player) ?? "").trim())
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b));
+
+  // Reasonable defaults so dropdowns aren’t blank (all players for every selector)
+  if (!ai.player && allPlayers.length) ai.player = allPlayers[0];
+
+  if (!ai.player1 && allPlayers.length) ai.player1 = allPlayers[0];
+  if (!ai.player2 && allPlayers.length) ai.player2 = allPlayers[Math.min(1, allPlayers.length - 1)];
+
+  if (!ai.ca1 && allPlayers.length) ai.ca1 = allPlayers[0];
+  if (!ai.ca2 && allPlayers.length) ai.ca2 = allPlayers[Math.min(1, allPlayers.length - 1)];
+
+  if (!ai.tx1 && allPlayers.length) ai.tx1 = allPlayers[0];
+  if (!ai.tx2 && allPlayers.length) ai.tx2 = allPlayers[Math.min(1, allPlayers.length - 1)];
+
+  const scenarioOptions = ["Year/Trip Summary", "Player Profile", "Singles Prediction", "Fourball Prediction"];
+  const styleOptions = ["SportsCenter", "Locker-Room"];
+
+  // Helper to render your “pill + select” pattern
+  const pillSelect = (id, label, value, options) => {
+    return `
+      <span class="meta-btn">
+        ${escapeHtml(label)} <strong>${escapeHtml(value)}</strong>
+        <select class="chip-select" id="${escapeHtml(id)}" aria-label="${escapeHtml(label)}">
+          ${options
+            .map((opt) => {
+              const v = String(opt);
+              const selected = v === String(value) ? " selected" : "";
+              return `<option value="${escapeHtml(v)}"${selected}>${escapeHtml(v)}</option>`;
+            })
+            .join("")}
+        </select>
+      </span>
+    `;
+  };
+
+  // Row 1: Scenario
+  const row1 = `
+    <div class="meta">
+      ${pillSelect("aiScenarioSelect", "Scenario:", ai.scenario, scenarioOptions)}
+    </div>
+  `;
+
+  // Row 2: Scenario-dependent pills
+  let row2Inner = "";
+  if (ai.scenario === "Year/Trip Summary") {
+    const yearLabel = ai.year == null ? "—" : String(ai.year);
+    row2Inner = `
+      ${pillSelect("aiYearSelect", "Year:", yearLabel, years.map(String))}
+      <span class="meta-btn">
+        Trip: <strong>${escapeHtml(ai.trip || "All")}</strong>
+      </span>
+    `;
+  } else if (ai.scenario === "Player Profile") {
+    row2Inner = pillSelect("aiPlayerSelect", "Player:", ai.player || "—", allPlayers);
+  } else if (ai.scenario === "Singles Prediction") {
+    row2Inner = `
+      ${pillSelect("aiP1Select", "Player 1:", ai.player1 || "—", allPlayers)}
+      ${pillSelect("aiP2Select", "Player 2:", ai.player2 || "—", allPlayers)}
+    `;
+  } else if (ai.scenario === "Fourball Prediction") {
+    row2Inner = `
+      ${pillSelect("aiCA1Select", "Cali Player 1:", ai.ca1 || "—", allPlayers)}
+      ${pillSelect("aiCA2Select", "Cali Player 2:", ai.ca2 || "—", allPlayers)}
+      ${pillSelect("aiTX1Select", "Tex-Mex Player 1:", ai.tx1 || "—", allPlayers)}
+      ${pillSelect("aiTX2Select", "Tex-Mex Player 2:", ai.tx2 || "—", allPlayers)}
+    `;
+  }
+
+  const row2 = `<div class="meta">${row2Inner}</div>`;
+
+  // Row 3: Style (left) + Generate and Clear (right)
+  // Inline flex wrapper so you don’t need CSS changes.
+  const row3 = `
+    <div class="meta" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        ${pillSelect("aiStyleSelect", "Style:", ai.style, styleOptions)}
+      </div>
+
+      <div style="display:flex; align-items:center; gap:10px;">
+        <button class="btn" id="aiGenerateBtn" type="button">Generate</button>
+        <button class="btn" id="aiClearBtn" type="button">Clear</button>
+      </div>
+    </div>
+  `;
+
+
+  // Put the controls into the same place as other view filters
+    // Put the controls into the same place as other view filters (STATUS line)
+  viewControlsEl.innerHTML = ""; // controls row is hidden in CSS
+
+  setStatusHTML(`
+    <div class="meta-stack">
+      ${row1}
+      ${row2}
+      ${row3}
+    </div>
+  `);
+
+  // Body (response box placeholder)
+  viewBodyEl.innerHTML = `
+    <div class="tablewrap">
+      <div style="border:1px solid rgba(255,255,255,0.25); border-radius:12px; min-height:320px; padding:14px;">
+        <div id="aiOutput" style="white-space:pre-wrap;">&lt;GenAI response&gt;</div>
+      </div>
+    </div>
+  `;
+
+
+  // --- Wire up events (UI only) ---
+  const rerender = () => renderAIAnalysis();
+
+  document.getElementById("aiScenarioSelect").addEventListener("change", (e) => {
+    ai.scenario = e.target.value;
+
+    // Keep defaults consistent with your requirements
+    if (ai.scenario === "Year/Trip Summary" && (ai.year == null) && maxYear != null) ai.year = maxYear;
+
+    rerender();
+  });
+
+  // Year changes only exist in Year/Trip Summary scenario
+  const yearEl = document.getElementById("aiYearSelect");
+  if (yearEl) {
+    yearEl.addEventListener("change", (e) => {
+      ai.year = Number(e.target.value);
+      rerender(); // updates Trip render
+    });
+  }
+
+  const playerEl = document.getElementById("aiPlayerSelect");
+  if (playerEl) playerEl.addEventListener("change", (e) => { ai.player = e.target.value; rerender(); });
+
+  const p1El = document.getElementById("aiP1Select");
+  if (p1El) p1El.addEventListener("change", (e) => { ai.player1 = e.target.value; rerender(); });
+
+  const p2El = document.getElementById("aiP2Select");
+  if (p2El) p2El.addEventListener("change", (e) => { ai.player2 = e.target.value; rerender(); });
+
+  const ca1El = document.getElementById("aiCA1Select");
+  if (ca1El) ca1El.addEventListener("change", (e) => { ai.ca1 = e.target.value; rerender(); });
+
+  const ca2El = document.getElementById("aiCA2Select");
+  if (ca2El) ca2El.addEventListener("change", (e) => { ai.ca2 = e.target.value; rerender(); });
+
+  const tx1El = document.getElementById("aiTX1Select");
+  if (tx1El) tx1El.addEventListener("change", (e) => { ai.tx1 = e.target.value; rerender(); });
+
+  const tx2El = document.getElementById("aiTX2Select");
+  if (tx2El) tx2El.addEventListener("change", (e) => { ai.tx2 = e.target.value; rerender(); });
+
+  document.getElementById("aiStyleSelect").addEventListener("change", (e) => {
+    ai.style = e.target.value;
+    rerender();
+  });
+
+  document.getElementById("aiClearBtn").addEventListener("click", () => {
+    const out = document.getElementById("aiOutput");
+    if (out) out.textContent = "";
+  });
+
+  document.getElementById("aiGenerateBtn").addEventListener("click", () => {
+    const out = document.getElementById("aiOutput");
+    if (!out) return;
+
+    // UI-only placeholder for now
+    out.textContent =
+      `Scenario: ${ai.scenario}\n` +
+      `Style: ${ai.style}\n` +
+      (ai.scenario === "Year/Trip Summary" ? `Year: ${ai.year}\nTrip: ${ai.trip}\n` : "") +
+      (ai.scenario === "Player Profile" ? `Player: ${ai.player}\n` : "") +
+      (ai.scenario === "Singles Prediction" ? `Player 1: ${ai.player1}\nPlayer 2: ${ai.player2}\n` : "") +
+      (ai.scenario === "Fourball Prediction" ? `CA1: ${ai.ca1}\nCA2: ${ai.ca2}\nTX1: ${ai.tx1}\nTX2: ${ai.tx2}\n` : "") +
+      `\n<This function is under construction. Hold your damn horses. With the next release, GenAI response will appear here.>`;
+  });
 }
 
 /***********************
