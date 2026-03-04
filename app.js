@@ -1,4 +1,4 @@
-/* Latest file as of 2.7.2026 at 12pm */
+/* Latest file as of 3.3.2026 at 10:50pm */
 
 /***********************
  * CONFIG: CSV URLS
@@ -381,7 +381,7 @@ const state = {
 
   ai: {
     scenario: "Player Profile", // default per your request
-    style: "SportsCenter",
+    style: "Locker-Room", // default style
 
     // Scenario: Year/Trip Summary
     year: null, // will be set to max year on first render
@@ -746,6 +746,7 @@ function ensureMatchLogFullLoaded(sourceKey = "master") {
           team: String(r.Team || "").trim(),
           strokes: String(r.Strokes ?? "").trim(),
           opponent: String(r.Opponent || "").trim(),
+          partner: String(r.Partner || "").trim(),
           result: String(r.Result || "").trim(),
           points: toNumber(r.Points),
           w: toNumber(r.W),
@@ -2633,6 +2634,2004 @@ function renderHeadToHeadDominance() {
 }
 
 /***********************
+ * AI Bundles (Step 2)
+ *
+ * Goal: Build compact, LLM-friendly "bundles" that are derived from the
+ * same data already used by the app (normalized match log rows).
+ *
+ * Conventions:
+ * - Use plain, human terms in headers: "Point %", "Points Differential", etc.
+ * - Percentages are strings like "32.4%".
+ * - Fourball TEAM aggregation (team totals, round totals, match totals) divides by 2.
+ *   Player-level stats DO NOT divide by 2.
+ ***********************/
+
+/***************
+ * Markdown table helper
+ ***************/
+function mdTable(headers, rows) {
+  const esc = (v) => String(v ?? "").replaceAll("|", "\\|");
+  const head = `| ${headers.map(esc).join(" | ")} |`;
+  const sep  = `| ${headers.map(() => "---").join(" | ")} |`;
+  const body = (rows || []).map(r => `| ${r.map(esc).join(" | ")} |`).join("\n");
+  return [head, sep, body].filter(Boolean).join("\n");
+}
+
+/***************
+ * Formatting helpers (LLM-friendly)
+ ***************/
+function fmtPct01(p) {
+  const x = Number(p);
+  if (!Number.isFinite(x)) return "";
+  return `${(x * 100).toFixed(1)}%`;
+}
+function fmtNum(n, digits = 1) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "";
+  return x.toFixed(digits);
+}
+
+/***************
+ * Normalized sources
+ ***************/
+async function getMasterNormalizedMatchRows() {
+  // ensureMatchLogFullLoaded("master") normalizes header casing + data types
+  await ensureMatchLogFullLoaded("master");
+  return cache.matchLogFull.master.rows;
+}
+
+async function getTeamResultsNormalized() {
+  const raw = await getMasterTeamResultsRaw();
+  return (raw || [])
+    .map(r => ({
+      year: Number(String(r.Year ?? "").trim()),
+      trip: String(r.Trip ?? "").trim(),
+      location: String(r.Location ?? "").trim(),
+      winningTeam: String(r["Winning Team"] ?? r.WinningTeam ?? "").trim(),
+      caliPoints: toNumber(r["Cali Points"] ?? r.CaliPoints ?? r.Cali),
+      texPoints:  toNumber(r["Tex-Mex Points"] ?? r["Tex-Mex"] ?? r.TexMexPoints ?? r.TexMex),
+    }))
+    .filter(r => Number.isFinite(r.year))
+    .sort((a,b) => b.year - a.year);
+}
+
+/***********************
+ * AI PROMPT URLS
+ * Keyed by "SCENARIO|Style". Fetched from published Google Docs on first use
+ * and cached in memory — edit the docs without touching the code.
+ * The YEAR placeholder in YEAR_TRIP_SUMMARY prompts is replaced at runtime.
+ ***********************/
+const PROMPT_URLS = {
+  "YEAR_TRIP_SUMMARY|SportsCenter":   "https://docs.google.com/document/d/e/2PACX-1vRYKFf7iwT8Noux-5eIyu2jKrckVOPAy3hK0ozK0rrFR1PIS0Sb8OoLAc5GmbC8eMQBfGfFbA4tip2Q/pub",
+  "YEAR_TRIP_SUMMARY|Locker-Room":    "https://docs.google.com/document/d/e/2PACX-1vQ0DP-twP1vvzM6UCXHc-_AZoLgt2J_JuT6v55GcoC39CvEQS600ZOAgR7ihhk8H0tpd2e7pyLJlcCd/pub",
+  "PLAYER_PROFILE|SportsCenter":      "https://docs.google.com/document/d/e/2PACX-1vQPDZWQV_PM1y6nG_TGFV8r1bZHdzlenSjvoCt2mB4II1__M2cK_uCm4J30WYqXy6iFXU-gzCcE_fje/pub",
+  "PLAYER_PROFILE|Locker-Room":       "https://docs.google.com/document/d/e/2PACX-1vRonL9axnSByuY8KX6zuHuqkfMGkyWd4XodHzrq1vOmJlo-vpbRYw-yqdJjERqqaX8Mot8BjncF-XhC/pub",
+  "SINGLES_PREDICTION|SportsCenter":  "https://docs.google.com/document/d/e/2PACX-1vTbg_vztH5-U-ywtwXnmfppicpfpp3XMooAX5qAaTr9a5hZJZ0PclwdNgTqR6lPaoVBqjuMGYeAbh24/pub",
+  "SINGLES_PREDICTION|Locker-Room":   "https://docs.google.com/document/d/e/2PACX-1vSMknHqIkhXHKurGrZngdRdGmYrhnt0JHHU2kGtqhmwwEIRnJ1rZj4Sza9lPFWEnb-tKGMVU2xhdWT2/pub",
+  "FOURBALL_PREDICTION|SportsCenter": "https://docs.google.com/document/d/e/2PACX-1vSwfX1jAbsw39AnwHrNJL9sVY6M5Rj0j88e3Xv5fK-7yMUwVj-nqgVv_Ketx7S74Ex_Rc4_qBnKcvE1/pub",
+  "FOURBALL_PREDICTION|Locker-Room":  "https://docs.google.com/document/d/e/2PACX-1vSOIrRHSvRFmKboPdqUXjxR_jxauok-tJfodBMx3AODIqaTlwXRJ4o3F2LtEkT0mkC-mxduFU9grcZy/pub",
+};
+
+const _promptCache = {};
+
+async function loadPrompt(key) {
+  if (_promptCache[key]) return _promptCache[key];
+  const url = PROMPT_URLS[key];
+  if (!url) return "";
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch prompt (${res.status})`);
+  const html = await res.text();
+  // Google Docs published HTML uses h1-h6 for section headings and li for bullets.
+  // Use DOMParser to isolate the doc body, then convert block elements to newlines.
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const content = doc.querySelector(".doc-content") || doc.body;
+  const text = content.innerHTML
+    .replace(/<\/h[1-6]>/gi, "\n\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  _promptCache[key] = text;
+  return text;
+}
+
+/***************
+ * Bundle entrypoint
+ ***************/
+async function buildAIBundle({ scenario, style, selections }) {
+  const base = {
+    version: "ai-bundle-v2",
+    scenario,
+    style,
+    inputs: selections,
+    generatedAtISO: new Date().toISOString(),
+    tables: [],
+    facts: {},
+    rarityFacts: [],
+  };
+
+  if (scenario === "YEAR_TRIP_SUMMARY") return buildBundleYearTripSummary(base);
+  if (scenario === "PLAYER_PROFILE") return buildBundlePlayerProfile(base);
+  if (scenario === "SINGLES_PREDICTION") return buildBundleSinglesPrediction(base);
+  if (scenario === "FOURBALL_PREDICTION") return buildBundleFourballPrediction(base);
+
+  throw new Error(`Unknown scenario: ${scenario}`);
+}
+
+/******************************************************************
+ * Shared aggregation helpers
+ ******************************************************************/
+function computePointsFromResult(result) {
+  if (result === "Win") return 1;
+  if (result === "Halved") return 0.5;
+  return 0;
+}
+
+function rowPoints(r) {
+  const ptsRaw = Number(r.points ?? r.Points);
+  if (Number.isFinite(ptsRaw)) return ptsRaw;
+  const res = String(r.result ?? r.Result ?? "").trim();
+  return computePointsFromResult(res);
+}
+
+function rowPtsDiff(r) {
+  const pd = Number(r.ptsdiff ?? r.Pts_Diff ?? r.PtsDiff);
+  return Number.isFinite(pd) ? pd : 0;
+}
+
+function rowW(r) { const x = Number(r.w ?? r.W); return Number.isFinite(x) ? x : 0; }
+function rowL(r) { const x = Number(r.l ?? r.L); return Number.isFinite(x) ? x : 0; }
+function rowH(r) { const x = Number(r.h ?? r.H); return Number.isFinite(x) ? x : 0; }
+
+function aggInit() {
+  return { matches: 0, wins: 0, losses: 0, halved: 0, points: 0, ptsDiff: 0 };
+}
+
+function aggAdd(agg, r) {
+  agg.matches += 1;
+  agg.wins += rowW(r);
+  agg.losses += rowL(r);
+  agg.halved += rowH(r);
+  agg.points += rowPoints(r);
+  agg.ptsDiff += rowPtsDiff(r);
+}
+
+function aggFinalize(agg) {
+  const pct = agg.matches ? (agg.points / agg.matches) : 0;
+  return { ...agg, pointPct01: pct };
+}
+
+/** Competition ranks (ties share rank; next rank jumps) */
+function buildCompetitionRanks(items, valueGetter) {
+  // Competition ranking (a.k.a. "1224" ranking): ties share the same rank, next rank jumps by tie size.
+  // Returns Map(playerName -> { rank, total, percentile })
+  const sorted = items.slice().sort((a, b) => (valueGetter(b) - valueGetter(a)));
+  const total = sorted.length;
+
+  const percentileFromRank = (rank) => {
+    if (!total || total <= 1 || rank == null) return 100;
+    return Math.round(((total - rank) / (total - 1)) * 1000) / 10; // 1 decimal
+  };
+
+  const out = new Map();
+  let i = 0;
+  while (i < sorted.length) {
+    const v = valueGetter(sorted[i]);
+    let j = i;
+    while (j < sorted.length && valueGetter(sorted[j]) === v) j++;
+
+    const rank = i + 1;
+    const percentile = percentileFromRank(rank);
+
+    for (let k = i; k < j; k++) {
+      out.set(sorted[k].player, { rank, total, percentile });
+    }
+    i = j;
+  }
+  return out;
+}
+
+/******************************************************************
+ * Player Profile bundle
+ ******************************************************************/
+async function buildBundlePlayerProfile(base) {
+  const playerName = String(base.inputs?.player || "").trim();
+  if (!playerName) {
+    base.facts = { Error: "No player supplied in inputs." };
+    return base;
+  }
+
+  const masterRows = await getMasterNormalizedMatchRows();   // normalized match log (all years)
+  const teamRows   = await getTeamResultsNormalized();       // per-year trip/location/winner/points
+
+  // ---- Collect this player's rows (All / Singles / Fourball) ----
+  const playerRows = masterRows.filter(r => String(r.player || "").trim() === playerName);
+  if (!playerRows.length) {
+    base.facts = { Error: `Player "${playerName}" not found in Master Match Log.` };
+    return base;
+  }
+
+  const singlesRows  = playerRows.filter(r => String(r.format || "").trim() === "Singles");
+  const fourballRows = playerRows.filter(r => String(r.format || "").trim() === "Fourball");
+
+  // ---- Aggregate helpers (use shared aggInit/aggAdd/aggFinalize) ----
+  function aggregate(rows) {
+    const agg = aggInit();
+    for (const r of rows) aggAdd(agg, r);
+    return aggFinalize(agg);
+  }
+
+  // ---- Year-by-year service record ----
+  const yearMap = new Map(); // year -> rows
+  for (const r of playerRows) {
+    const y = Number(r.year);
+    if (!Number.isFinite(y)) continue;
+    if (!yearMap.has(y)) yearMap.set(y, []);
+    yearMap.get(y).push(r);
+  }
+  const yearsDesc = Array.from(yearMap.keys()).sort((a,b) => b - a);
+
+  const serviceRecordRows = yearsDesc.map(y => {
+    const rowsY = yearMap.get(y) || [];
+    const aggY = aggregate(rowsY);
+
+    const teamRow = teamRows.find(tr => tr.year === y);
+    const trip = teamRow ? teamRow.trip : "";
+    const winningTeam = teamRow ? teamRow.winningTeam : "";
+    const team = String(rowsY[0]?.team || "").trim();
+
+    return {
+      year: y,
+      trip,
+      team,
+      winningTeam,
+      matches: aggY.matches,
+      record: `${aggY.wins}-${aggY.losses}-${aggY.halved}`,
+      points: aggY.points,
+      pointPct01: aggY.pointPct01,
+      ptsDiff: aggY.ptsDiff,
+    };
+  });
+
+  const yearsParticipating = serviceRecordRows.length;
+  const yearsOnWinningTeam = serviceRecordRows.filter(r => r.team && r.winningTeam && r.team === r.winningTeam).length;
+
+  // ---- Format split (All / Singles / Fourball) ----
+  const aggAll      = aggregate(playerRows);
+  const aggSingles  = aggregate(singlesRows);
+  const aggFourball = aggregate(fourballRows);
+
+  const formatSplitRows = [
+    { format: "All",      agg: aggAll },
+    { format: "Singles",  agg: aggSingles },
+    { format: "Fourball", agg: aggFourball },
+  ].map(x => ({
+    format: x.format,
+    matches: x.agg.matches,
+    record: `${x.agg.wins}-${x.agg.losses}-${x.agg.halved}`,
+    points: x.agg.points,
+    pointPct01: x.agg.pointPct01,
+    ptsDiff: x.agg.ptsDiff,
+  }));
+
+  // ---- Point % by round (All years). Exclude Round 5. Only "All Point %". ----
+  const roundAgg = new Map(); // round -> agg
+  for (const r of playerRows) {
+    const roundNum = Number(r.round);
+    if (!Number.isFinite(roundNum) || roundNum === 5) continue;
+    if (!roundAgg.has(roundNum)) roundAgg.set(roundNum, aggInit());
+    aggAdd(roundAgg.get(roundNum), r);
+  }
+  const roundPctRows = Array.from(roundAgg.entries())
+    .map(([round, agg]) => ({ round, pct01: aggFinalize(agg).pointPct01 }))
+    .sort((a,b) => a.round - b.round);
+
+  // ---- Singles vs Opponent (Opponent exists in data) ----
+  const singlesOppMap = new Map(); // opponent -> rows
+  for (const r of singlesRows) {
+    const opp = String(r.opponent || "").trim();
+    if (!opp) continue;
+    if (!singlesOppMap.has(opp)) singlesOppMap.set(opp, []);
+    singlesOppMap.get(opp).push(r);
+  }
+
+  const singlesVsOppRows = Array.from(singlesOppMap.entries()).map(([opponent, rowsO]) => {
+    const a = aggregate(rowsO);
+    return {
+      opponent,
+      matches: a.matches,
+      record: `${a.wins}-${a.losses}-${a.halved}`,
+      points: a.points,
+      pointPct01: a.pointPct01,
+      ptsDiff: a.ptsDiff,
+    };
+  }).sort((a,b) => b.ptsDiff - a.ptsDiff || b.matches - a.matches);
+
+  // Nemesis / Patsy (Singles only) – tie-aware list
+  const nemesisList = singlesVsOppRows.length
+    ? (() => {
+        const minVal = Math.min(...singlesVsOppRows.map(o => o.ptsDiff));
+        return singlesVsOppRows.filter(o => o.ptsDiff === minVal);
+      })()
+    : [];
+  const patsyList = singlesVsOppRows.length
+    ? (() => {
+        const maxVal = Math.max(...singlesVsOppRows.map(o => o.ptsDiff));
+        return singlesVsOppRows.filter(o => o.ptsDiff === maxVal);
+      })()
+    : [];
+
+  // ---- Fourball with Partner (Partner exists in data) ----
+  const partnerMap = new Map(); // partner -> rows
+  for (const r of fourballRows) {
+    const partner = String(r.partner || "").trim();
+    if (!partner) continue;
+    if (!partnerMap.has(partner)) partnerMap.set(partner, []);
+    partnerMap.get(partner).push(r);
+  }
+
+  const fourballWithPartnerRows = Array.from(partnerMap.entries()).map(([partner, rowsP]) => {
+    const a = aggregate(rowsP);
+    return {
+      partner,
+      matches: a.matches,
+      record: `${a.wins}-${a.losses}-${a.halved}`,
+      points: a.points,
+      pointPct01: a.pointPct01,
+      ptsDiff: a.ptsDiff,
+    };
+  }).sort((a,b) => b.ptsDiff - a.ptsDiff || b.matches - a.matches);
+
+  // ---- Fourball vs Opponents (compute opponent list via Match_ID + Team) ----
+  // In Fourball, each match has 4 rows (2 per team) sharing matchId.
+  // We build match groups, find the two opposing players, then assign that opponent pair to each player row.
+  const fourballByMatch = new Map(); // matchId -> rows
+  for (const r of fourballRows) {
+    const mid = String(r.matchId || "").trim();
+    if (!mid) continue;
+    if (!fourballByMatch.has(mid)) fourballByMatch.set(mid, []);
+    fourballByMatch.get(mid).push(r);
+  }
+
+  const fourballOppMap = new Map(); // "Opp1 & Opp2" -> rows
+  for (const [mid, grpSelf] of fourballByMatch.entries()) {
+    // Need full match group (all 4 players) from masterRows
+    const full = masterRows.filter(r => String(r.matchId || "").trim() === mid);
+    if (full.length < 4) continue;
+
+    const myTeam = String(grpSelf[0]?.team || "").trim();
+    const oppPlayers = full
+      .filter(r => String(r.team || "").trim() && String(r.team || "").trim() !== myTeam)
+      .map(r => String(r.player || "").trim())
+      .filter(Boolean);
+
+    // Make a stable label: sorted unique opponent names joined with " + "
+    const uniq = Array.from(new Set(oppPlayers)).sort((a,b) => a.localeCompare(b));
+    if (!uniq.length) continue;
+    const label = uniq.join(" + ");
+
+    if (!fourballOppMap.has(label)) fourballOppMap.set(label, []);
+    // Add THIS player's two rows for this match (grpSelf). In the log, player appears once per match; but safe.
+    for (const r of grpSelf) fourballOppMap.get(label).push(r);
+  }
+
+  const fourballVsOppRows = Array.from(fourballOppMap.entries()).map(([opponents, rowsO]) => {
+    const a = aggregate(rowsO);
+    return {
+      opponents,
+      matches: a.matches,
+      record: `${a.wins}-${a.losses}-${a.halved}`,
+      points: a.points,
+      pointPct01: a.pointPct01,
+      ptsDiff: a.ptsDiff,
+    };
+  }).sort((a,b) => b.ptsDiff - a.ptsDiff || b.matches - a.matches);
+
+  // ---- Best / Worst year(s) by Point % (tie-aware) ----
+  const bestYears = [];
+  const worstYears = [];
+  if (serviceRecordRows.length) {
+    const maxPct = Math.max(...serviceRecordRows.map(r => r.pointPct01));
+    const minPct = Math.min(...serviceRecordRows.map(r => r.pointPct01));
+    for (const r of serviceRecordRows) {
+      if (r.pointPct01 === maxPct) bestYears.push({ Year: r.year, Trip: r.trip, "Point %": fmtPct01(r.pointPct01) });
+      if (r.pointPct01 === minPct) worstYears.push({ Year: r.year, Trip: r.trip, "Point %": fmtPct01(r.pointPct01) });
+    }
+  }
+
+  // ---- MVP / Not-So MVP counts (tie-aware per year; based on YEAR point %) ----
+  // Build per-player-per-year point% for ALL players so we can:
+  //  1) mark MVP/NotSo in service record table
+  //  2) count MVPs and NotSo MVPs for the selected player
+  const allByPlayerYear = new Map(); // player -> year -> aggFinal
+  for (const r of masterRows) {
+    const p = String(r.player || "").trim();
+    const y = Number(r.year);
+    if (!p || !Number.isFinite(y)) continue;
+    if (!allByPlayerYear.has(p)) allByPlayerYear.set(p, new Map());
+    const ymap = allByPlayerYear.get(p);
+    if (!ymap.has(y)) ymap.set(y, aggInit());
+    aggAdd(ymap.get(y), r);
+  }
+  // finalize to store pointPct01 for each (player, year)
+  for (const [, ymap] of allByPlayerYear.entries()) {
+    for (const [y, agg] of ymap.entries()) {
+      ymap.set(y, aggFinalize(agg));
+    }
+  }
+
+  const mvpYears = [];
+  const notSoYears = [];
+  // Per year min/max across players present
+  const yearsAll = Array.from(new Set(teamRows.map(t => t.year))).sort((a,b) => a - b);
+  for (const y of yearsAll) {
+    // collect pcts for players who played that year
+    const pcts = [];
+    for (const [p, ymap] of allByPlayerYear.entries()) {
+      const a = ymap.get(y);
+      if (a && a.matches > 0) pcts.push({ player: p, pct: a.pointPct01 });
+    }
+    if (!pcts.length) continue;
+    const maxPct = Math.max(...pcts.map(x => x.pct));
+    const minPct = Math.min(...pcts.map(x => x.pct));
+
+    if (pcts.find(x => x.player === playerName && x.pct === maxPct)) {
+      const tr = teamRows.find(t => t.year === y);
+      mvpYears.push({ Year: y, Trip: tr ? tr.trip : "", "Point %": fmtPct01(maxPct) });
+    }
+    if (pcts.find(x => x.player === playerName && x.pct === minPct)) {
+      const tr = teamRows.find(t => t.year === y);
+      notSoYears.push({ Year: y, Trip: tr ? tr.trip : "", "Point %": fmtPct01(minPct) });
+    }
+  }
+
+  const mvpCount = mvpYears.length;
+  const notSoCount = notSoYears.length;
+
+  // Add MVP/NotSo flags to service record rows
+  const mvpSet = new Set(mvpYears.map(x => x.Year));
+  const notSoSet = new Set(notSoYears.map(x => x.Year));
+  const serviceRecordRowsWithFlags = serviceRecordRows.map(r => ({
+    ...r,
+    mvp: mvpSet.has(r.year) ? "Yes" : "No",
+    notSo: notSoSet.has(r.year) ? "Yes" : "No",
+  }));
+
+  // ---- Rankings (Percentile required; ranks by format for key metrics) ----
+  // Build career metrics for all players for each format
+  function buildAllPlayerMetrics(format) {
+    const out = [];
+    const players = Array.from(new Set(masterRows.map(r => String(r.player || "").trim()).filter(Boolean)));
+    for (const p of players) {
+      const rowsP = masterRows.filter(r => String(r.player || "").trim() === p);
+      const rowsF =
+        format === "All" ? rowsP :
+        format === "Singles" ? rowsP.filter(r => String(r.format || "").trim() === "Singles") :
+        rowsP.filter(r => String(r.format || "").trim() === "Fourball");
+      const a = aggregate(rowsF);
+      out.push({
+        player: p,
+        pointPct01: a.pointPct01,
+        ptsDiff: a.ptsDiff,
+        points: a.points,
+        matches: a.matches,
+      });
+    }
+    return out;
+  }
+
+  const metricsAll      = buildAllPlayerMetrics("All");
+  const metricsSingles  = buildAllPlayerMetrics("Singles");
+  const metricsFourball = buildAllPlayerMetrics("Fourball");
+
+  const rankMaps = {
+    All: {
+      pointPct: buildCompetitionRanks(metricsAll, x => x.pointPct01),
+      ptsDiff:  buildCompetitionRanks(metricsAll, x => x.ptsDiff),
+      points:   buildCompetitionRanks(metricsAll, x => x.points),
+      matches:  buildCompetitionRanks(metricsAll, x => x.matches),
+    },
+    Singles: {
+      pointPct: buildCompetitionRanks(metricsSingles, x => x.pointPct01),
+      ptsDiff:  buildCompetitionRanks(metricsSingles, x => x.ptsDiff),
+      points:   buildCompetitionRanks(metricsSingles, x => x.points),
+      matches:  buildCompetitionRanks(metricsSingles, x => x.matches),
+    },
+    Fourball: {
+      pointPct: buildCompetitionRanks(metricsFourball, x => x.pointPct01),
+      ptsDiff:  buildCompetitionRanks(metricsFourball, x => x.ptsDiff),
+      points:   buildCompetitionRanks(metricsFourball, x => x.points),
+      matches:  buildCompetitionRanks(metricsFourball, x => x.matches),
+    },
+  };
+
+  function getRankRow(formatLabel, metricLabel, map) {
+    const entry = map.get(playerName);
+    if (!entry) return [formatLabel, metricLabel, "", "", ""];
+    return [formatLabel, metricLabel, String(entry.rank), String(entry.total), `${entry.percentile}%`];
+  }
+
+  const ranksRows = [
+    ...[
+      ["All", "Point %",        rankMaps.All.pointPct],
+      ["All", "Points Differential", rankMaps.All.ptsDiff],
+      ["All", "Points",         rankMaps.All.points],
+      ["All", "Matches",        rankMaps.All.matches],
+    ].map(([fmt, label, map]) => getRankRow(fmt, label, map)),
+    ...[
+      ["Singles", "Point %",        rankMaps.Singles.pointPct],
+      ["Singles", "Points Differential", rankMaps.Singles.ptsDiff],
+      ["Singles", "Points",         rankMaps.Singles.points],
+      ["Singles", "Matches",        rankMaps.Singles.matches],
+    ].map(([fmt, label, map]) => getRankRow(fmt, label, map)),
+    ...[
+      ["Fourball", "Point %",        rankMaps.Fourball.pointPct],
+      ["Fourball", "Points Differential", rankMaps.Fourball.ptsDiff],
+      ["Fourball", "Points",         rankMaps.Fourball.points],
+      ["Fourball", "Matches",        rankMaps.Fourball.matches],
+    ].map(([fmt, label, map]) => getRankRow(fmt, label, map)),
+  ];
+
+  // ---- Rarity facts (Excel v3) ----
+  // PerfectYear / ShutoutYear: count how many unique players have ever had >=1 perfect (100%) year or shutout (0%) year.
+  // WinStreak: longest W-only streak (across all matches) for this player; plus record streak across all players.
+  // MultipleMVPs / MultipleNotSoMVPs: player has MVPCount >=2 or NotSoMVPCount >=2.
+  const rarityFacts = [];
+
+  // Count perfect / shutout players across all players (using per-player-year point%)
+  let perfectPlayers = 0;
+  let shutoutPlayers = 0;
+  for (const [, ymap] of allByPlayerYear.entries()) {
+    let hasPerfect = false;
+    let hasShutout = false;
+    for (const [, agg] of ymap.entries()) {
+      if (!agg || agg.matches <= 0) continue;
+      if (agg.pointPct01 === 1) hasPerfect = true;
+      if (agg.pointPct01 === 0) hasShutout = true;
+    }
+    if (hasPerfect) perfectPlayers += 1;
+    if (hasShutout) shutoutPlayers += 1;
+  }
+
+  if (serviceRecordRows.some(r => r.pointPct01 === 1)) {
+    rarityFacts.push({
+      Key: "PerfectYear",
+      Text: `${playerName} is 1 of ${perfectPlayers} players with an undefeated year - nothing but wins.`,
+    });
+  }
+  if (serviceRecordRows.some(r => r.pointPct01 === 0)) {
+    rarityFacts.push({
+      Key: "ShutoutYear",
+      Text: `${playerName} has the unfortunate distinction of being 1 of ${shutoutPlayers} players who was completely shutout in a year - nothing but losses.`,
+    });
+  }
+
+  // Win streaks (Win-only) computed from match results per player
+  function winStreakForPlayer(p) {
+    const rowsP = masterRows.filter(r => String(r.player || "").trim() === p);
+    // Sort deterministically by year, round, match (if available)
+    const sorted = rowsP.slice().sort((a,b) =>
+      (Number(a.year)-Number(b.year)) ||
+      (Number(a.round)-Number(b.round)) ||
+      (String(a.matchId).localeCompare(String(b.matchId)))
+    );
+
+    let best = 0;
+    let cur = 0;
+    for (const r of sorted) {
+      const w = rowW(r);
+      const l = rowL(r);
+      const h = rowH(r);
+      const isWin = w > 0 && l === 0 && h === 0;
+      if (isWin) { cur += 1; best = Math.max(best, cur); }
+      else { cur = 0; }
+    }
+    return best;
+  }
+
+  const bestStreak = winStreakForPlayer(playerName);
+
+  // Record streak across all players (needed for "NSRC record is X")
+  let recordStreak = 0;
+  const allPlayers = Array.from(new Set(masterRows.map(r => String(r.player || "").trim()).filter(Boolean)));
+  for (const p of allPlayers) recordStreak = Math.max(recordStreak, winStreakForPlayer(p));
+
+  if (bestStreak > 0) {
+    rarityFacts.push({
+      Key: "WinStreak",
+      Text: `${playerName}'s longest match win streak is ${bestStreak} matches. The NSRC win streak record is ${recordStreak}.`,
+    });
+  }
+
+  if (mvpCount >= 2) {
+    rarityFacts.push({ Key: "MultipleMVPs", Text: `MVP honors go to the highest Point % in a year and getting this more than once is very rare. ${playerName} has been the trip MVP ${mvpCount} times.` });
+  }
+  if (notSoCount >= 2) {
+    rarityFacts.push({ Key: "MultipleNotSoMVPs", Text: `Not-So-MVP honors go to the lowest Point % in a year and getting this more than once is very rare. ${playerName} has unfortunately been the trip Not-So-MVP ${notSoCount} times.` });
+  }
+
+  // ---- Tables (Excel v3 order & column names) ----
+  base.tables = [
+    {
+      id: "service_record",
+      title: "Service Record",
+      markdown: mdTable(
+        ["Year","Trip","Team","Winning Team","Matches","Record","Points","Point %","Points Differential","MVP","Not So MVP"],
+        serviceRecordRowsWithFlags.map(r => [
+          r.year,
+          r.trip,
+          r.team,
+          r.winningTeam,
+          r.matches,
+          r.record,
+          fmtNum(r.points, 2),
+          fmtPct01(r.pointPct01),
+          fmtNum(r.ptsDiff, 2),
+          r.mvp,
+          r.notSo,
+        ])
+      ),
+    },
+    {
+      id: "format_split",
+      title: "Format Split",
+      markdown: mdTable(
+        ["Format","Matches","Record","Points","Point %","Points Differential"],
+        formatSplitRows.map(r => [
+          r.format,
+          r.matches,
+          r.record,
+          fmtNum(r.points, 2),
+          fmtPct01(r.pointPct01),
+          fmtNum(r.ptsDiff, 2),
+        ])
+      ),
+    },
+    {
+      id: "point_percentage_by_round",
+      title: "Point Percentage by Round",
+      markdown: mdTable(
+        ["Round","Point %"],
+        roundPctRows.map(r => [r.round, fmtPct01(r.pct01)])
+      ),
+    },
+    {
+      id: "singles_vs_opponents",
+      title: "Singles vs Opponents",
+      markdown: mdTable(
+        ["Opponent","Matches","Record","Points","Point %","Points Differential"],
+        singlesVsOppRows.map(r => [
+          r.opponent,
+          r.matches,
+          r.record,
+          fmtNum(r.points, 2),
+          fmtPct01(r.pointPct01),
+          fmtNum(r.ptsDiff, 2),
+        ])
+      ),
+    },
+    {
+      id: "fourball_vs_opponents",
+      title: "Fourball vs Opponents",
+      markdown: mdTable(
+        ["Opponents","Matches","Record","Points","Point %","Points Differential"],
+        fourballVsOppRows.map(r => [
+          r.opponents,
+          r.matches,
+          r.record,
+          fmtNum(r.points, 2),
+          fmtPct01(r.pointPct01),
+          fmtNum(r.ptsDiff, 2),
+        ])
+      ),
+    },
+    {
+      id: "fourball_with_partner",
+      title: "Fourball with Partner",
+      markdown: mdTable(
+        ["Partner","Matches","Record","Points","Point %","Points Differential"],
+        fourballWithPartnerRows.map(r => [
+          r.partner,
+          r.matches,
+          r.record,
+          fmtNum(r.points, 2),
+          fmtPct01(r.pointPct01),
+          fmtNum(r.ptsDiff, 2),
+        ])
+      ),
+    },
+    {
+      id: "ranks",
+      title: "Ranks",
+      markdown: mdTable(
+        ["Format","Metric","Rank","Total","Percentile"],
+        ranksRows
+      ),
+    },
+  ];
+
+  // ---- Facts (LLM-ready, consistent terms) ----
+  base.facts = {
+    Player: playerName,
+    "Years Participating": yearsParticipating,
+    "Years on Winning Team": yearsOnWinningTeam,
+    "Career Matches": aggAll.matches,
+    "Career Record": `${aggAll.wins}-${aggAll.losses}-${aggAll.halved}`,
+    "Career Points": fmtNum(aggAll.points, 2),
+    "Career Point %": fmtPct01(aggAll.pointPct01),
+    "Career Points Differential": fmtNum(aggAll.ptsDiff, 2),
+    "MVP Count": mvpCount,
+    "Not So MVP Count": notSoCount,
+    "Best Year(s) by Point %": bestYears,
+    "Worst Year(s) by Point %": worstYears,
+    "Nemesis (Singles, lowest Points Differential)": nemesisList.map(n => ({
+      Opponent: n.opponent,
+      Matches: n.matches,
+      Record: n.record,
+      Points: fmtNum(n.points, 2),
+      "Point %": fmtPct01(n.pointPct01),
+      "Points Differential": fmtNum(n.ptsDiff, 2),
+    })),
+    "Patsy (Singles, highest Points Differential)": patsyList.map(p => ({
+      Opponent: p.opponent,
+      Matches: p.matches,
+      Record: p.record,
+      Points: fmtNum(p.points, 2),
+      "Point %": fmtPct01(p.pointPct01),
+      "Points Differential": fmtNum(p.ptsDiff, 2),
+    })),
+  };
+
+  base.rarityFacts = rarityFacts;
+
+  return base;
+}
+
+
+/******************************************************************
+ * Singles Prediction bundle
+ ******************************************************************/
+async function buildBundleSinglesPrediction(base) {
+  const rows = await getMasterNormalizedMatchRows();   // normalized match log rows
+  const teamRows = await getTeamResultsNormalized();  // year -> trip/location/winner/points
+
+  const p1 = String(base.inputs?.player1 ?? "").trim();
+  const p2 = String(base.inputs?.player2 ?? "").trim();
+  if (!p1 || !p2) {
+    base.facts = { error: "Both Player 1 and Player 2 are required." };
+    return base;
+  }
+
+  // ---------- Build Player Profile bundles (reuse existing, then trim tables) ----------
+  async function buildTrimmedPlayerProfile(playerName) {
+    const tmp = {
+      version: base.version,
+      scenario: "PLAYER_PROFILE",
+      style: base.style,
+      inputs: { player: playerName },
+      generatedAtISO: base.generatedAtISO,
+      tables: [],
+      facts: {},
+      rarityFacts: [],
+    };
+
+    const prof = await buildBundlePlayerProfile(tmp);
+
+    // Remove tables explicitly not needed for Singles Prediction
+    const drop = new Set([
+      "service_record",
+      "point_percentage_by_round",
+      "fourball_with_partner",
+      "fourball_vs_opponents",
+    ]);
+
+    const keptTables = (prof.tables || []).filter(t => !drop.has(t.id));
+    return { facts: prof.facts || {}, rarityFacts: prof.rarityFacts || [], tables: keptTables };
+  }
+
+  const prof1 = await buildTrimmedPlayerProfile(p1);
+  const prof2 = await buildTrimmedPlayerProfile(p2);
+
+  // ---------- Head-to-head (Singles only) ----------
+  const norm = (s) => String(s ?? "").trim();
+
+  const singlesRows = rows.filter(r => norm(r.format) === "Singles");
+
+  // For H2H history, use Player1 perspective rows (one row per match)
+  const p1vs2 = singlesRows.filter(r => norm(r.player) === p1 && norm(r.opponent) === p2);
+
+  const p1vs2Sorted = p1vs2.slice().sort((a, b) => {
+    const ya = Number(a.year), yb = Number(b.year);
+    if (ya !== yb) return ya - yb;
+    const ra = Number(a.round), rb = Number(b.round);
+    if (ra !== rb) return ra - rb;
+    return String(a.matchId ?? "").localeCompare(String(b.matchId ?? ""));
+  });
+
+  const h2h = (() => {
+    let wins1 = 0, wins2 = 0, halved = 0, matches = 0;
+    for (const r of p1vs2Sorted) {
+      wins1 += rowW(r);
+      wins2 += rowL(r);   // from P1 perspective, P1 losses are P2 wins
+      halved += rowH(r);
+      matches += 1;
+    }
+    return { matches, player1Wins: wins1, player2Wins: wins2, halvedMatches: halved };
+  })();
+
+  const h2hHistoryRows = p1vs2Sorted.map(r => {
+    const y = Number(r.year);
+    const teamRow = teamRows.find(t => t.year === y);
+    const trip = teamRow ? teamRow.trip : (r.trip || "");
+    const round = Number(r.round);
+    const outcome =
+      rowW(r) > 0 ? `${p1} Win` :
+      rowL(r) > 0 ? `${p2} Win` :
+      "Halved Match";
+    return [y, trip, round, outcome];
+  });
+
+  const tableH2HHistory = mdTable(
+    ["Year", "Trip", "Round", "Outcome"],
+    h2hHistoryRows
+  );
+
+  // ---------- Prediction (Singles) ----------
+  function careerSinglesAgg(playerName) {
+    const arr = singlesRows.filter(r => norm(r.player) === playerName);
+    const agg = aggInit();
+    for (const r of arr) aggAdd(agg, r);
+    return aggFinalize(agg);
+  }
+
+  const c1 = careerSinglesAgg(p1);
+  const c2 = careerSinglesAgg(p2);
+
+  // H2H point % from Player1 perspective rows (one row per match)
+  const h2hAgg = (() => {
+    const agg = aggInit();
+    for (const r of p1vs2Sorted) aggAdd(agg, r);
+    return aggFinalize(agg);
+  })();
+
+  function h2hWeight(matches) {
+    if (matches <= 0) return 0;
+    if (matches === 1) return 0.15;
+    if (matches === 2) return 0.30;
+    if (matches === 3) return 0.45;
+    return 0.60; // 4+
+  }
+
+  const wH2H = h2hWeight(h2h.matches);
+  const wa1 = (h2h.matches ? (h2hAgg.pointPct01 * wH2H) : 0) + (c1.pointPct01 * (1 - wH2H));
+
+  // Compute Player2 H2H point % from Player2 perspective rows (handles halves correctly)
+  const p2vs1 = singlesRows.filter(r => norm(r.player) === p2 && norm(r.opponent) === p1);
+  const h2hAgg2 = (() => {
+    const agg = aggInit();
+    for (const r of p2vs1) aggAdd(agg, r);
+    return aggFinalize(agg);
+  })();
+
+  const wa2 = (h2h.matches ? (h2hAgg2.pointPct01 * wH2H) : 0) + (c2.pointPct01 * (1 - wH2H));
+
+  function log5(pA, pB) {
+    const denom = (pA + pB - 2 * pA * pB);
+    if (!denom) return 0.5;
+    return (pA - pA * pB) / denom;
+  }
+  function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+
+  // Step 2: raw win probability (WP)
+  const wp1 = log5(wa1, wa2);
+
+  // Step 3: calibrated win probability (CWP) guardrails applied to WP
+  const cwp1 = clamp(wp1, 0.077, 0.923);
+  const cwp2 = 1 - cwp1;
+
+  // Step 4: halved probability based on CWP
+  const halved = clamp(0.13 * (1 - (Math.abs(cwp1 - 0.5) * 2)), 0, 0.13);
+
+  // Step 5: final win percentages
+  const win1 = (1 - halved) * cwp1;
+  const win2 = (1 - halved) * cwp2;
+
+  const predictionRows = [
+    ["Career Singles Matches", String(c1.matches), String(c2.matches)],
+    ["Career Singles Record", `${c1.wins}-${c1.losses}-${c1.halved}`, `${c2.wins}-${c2.losses}-${c2.halved}`],
+    ["Career Singles Point %", fmtPct01(c1.pointPct01), fmtPct01(c2.pointPct01)],
+    ["Career Singles Points Differential", fmtNum(c1.ptsDiff, 1), fmtNum(c2.ptsDiff, 1)],
+    ["Head-to-Head Singles Matches", String(h2h.matches), String(h2h.matches)],
+    ["Head-to-Head Singles Record", `${h2h.player1Wins}-${h2h.player2Wins}-${h2h.halvedMatches}`, `${h2h.player2Wins}-${h2h.player1Wins}-${h2h.halvedMatches}`],
+    ["Head-to-Head Singles Point %", fmtPct01(h2hAgg.pointPct01), fmtPct01(h2hAgg2.pointPct01)],
+    ["Head-to-Head Singles Points Differential", fmtNum(h2hAgg.ptsDiff, 1), fmtNum(h2hAgg2.ptsDiff, 1)],
+    ["Prediction Win", fmtPct01(win1), fmtPct01(win2)],
+    ["Prediction Halved", fmtPct01(halved), fmtPct01(halved)],
+  ];
+
+  // ---------- Assemble bundle (table order matters) ----------
+  base.tables = [
+    { id: "head_to_head_match_history", title: "Head-to-head singles match history", markdown: tableH2HHistory },
+  ];
+
+  // Player 1 tables (kept tables, in original Player Profile order)
+  for (const t of prof1.tables) {
+    base.tables.push({ id: `player1_${t.id}`, title: `Player 1 - ${t.title}`, markdown: t.markdown });
+  }
+
+  // Player 2 tables
+  for (const t of prof2.tables) {
+    base.tables.push({ id: `player2_${t.id}`, title: `Player 2 - ${t.title}`, markdown: t.markdown });
+  }
+
+  base.facts = {
+    Player1: { Player: p1, ...prof1.facts },
+    Player2: { Player: p2, ...prof2.facts },
+    "Head-to-Head Summary": {
+      "Head-to-Head Matches": h2h.matches,
+      "Player 1 Wins": h2h.player1Wins,
+      "Player 2 Wins": h2h.player2Wins,
+      "Halved Matches": h2h.halvedMatches,
+    },
+    "Match Prediction": {
+      "Player 1 Win": fmtPct01(win1),
+      "Player 2 Win": fmtPct01(win2),
+      "Halved Match": fmtPct01(halved),
+    },
+  };
+
+  base.rarityFacts = [
+    { Scope: "Player1", RarityFacts: prof1.rarityFacts },
+    { Scope: "Player2", RarityFacts: prof2.rarityFacts },
+  ];
+
+  return base;
+}
+
+
+/******************************************************************
+ * Fourball Prediction bundle
+ ******************************************************************/
+async function buildBundleFourballPrediction(base) {
+  // Inputs
+  const ca1 = String(base.inputs?.ca1 || "").trim();
+  const ca2 = String(base.inputs?.ca2 || "").trim();
+  const tx1 = String(base.inputs?.tx1 || "").trim();
+  const tx2 = String(base.inputs?.tx2 || "").trim();
+
+  if (!ca1 || !ca2 || !tx1 || !tx2) {
+    base.facts = { error: "Fourball Prediction requires ca1, ca2, tx1, tx2 inputs." };
+    return base;
+  }
+
+  // Pull normalized master rows once
+  const masterRows = await getMasterNormalizedMatchRows();
+
+  // Helper: build a player-profile bundle for reuse (format_split + ranks + career facts)
+  async function getProfileBundle(playerName) {
+    const tmp = {
+      version: base.version,
+      scenario: "PLAYER_PROFILE",
+      style: base.style,
+      inputs: { player: playerName },
+      generatedAtISO: base.generatedAtISO,
+      tables: [],
+      facts: {},
+      rarityFacts: [],
+    };
+    return await buildBundlePlayerProfile(tmp);
+  }
+
+  const [ppCA1, ppCA2, ppTX1, ppTX2] = await Promise.all([
+    getProfileBundle(ca1),
+    getProfileBundle(ca2),
+    getProfileBundle(tx1),
+    getProfileBundle(tx2),
+  ]);
+
+  // --- Extract the two reusable tables from Player Profile: format_split + ranks ---
+  function pickTable(bundle, id) {
+    return (bundle.tables || []).find(t => t.id === id) || null;
+  }
+
+  function addPrefixedTable(prefix, bundle, id, title) {
+    const t = pickTable(bundle, id);
+    base.tables.push({
+      id: `${prefix}_${id}`,
+      title,
+      markdown: t?.markdown || "",
+    });
+  }
+
+  // --- Career facts extractor (LLM-friendly terms) ---
+  // (Uses whatever Player Profile already computed as the single source of truth)
+  function pickCareerFacts(bundle) {
+    const f = bundle.facts || {};
+    const career = f.Career || f.career || {};
+    return {
+      Player: f.Player || f.player || "",
+      "Years Participating": f["Years Participating"] ?? f.yearsParticipating ?? "",
+      "Years on Winning Team": f["Years on Winning Team"] ?? f.yearsOnWinningTeam ?? "",
+      "Career Matches": career["Career Matches"] ?? career.matches ?? "",
+      "Career Record": career["Career Record"] ?? career.record ?? "",
+      "Career Points": career["Career Points"] ?? career.points ?? "",
+      "Career Point %": career["Career Point %"] ?? career["Point %"] ?? career.pointPct ?? career.pointPercentage ?? "",
+      "Career Point Differential": career["Career Point Differential"] ?? career["Points Differential"] ?? career.ptsDiff ?? career.pointsDifferential ?? "",
+      "MVP Count": f["MVP Count"] ?? f.mvpCount ?? "",
+      "Not So MVP Count": f["Not So MVP Count"] ?? f.notSoMVPCount ?? "",
+    };
+  }
+
+  const ca1Facts = pickCareerFacts(ppCA1);
+  const ca2Facts = pickCareerFacts(ppCA2);
+  const tx1Facts = pickCareerFacts(ppTX1);
+  const tx2Facts = pickCareerFacts(ppTX2);
+
+  // --- Build selected-only tables (Option 2) ---
+
+  const selected = {
+    ca: [ca1, ca2],
+    tx: [tx1, tx2],
+    all: [ca1, ca2, tx1, tx2],
+  };
+  const selectedSet = new Set(selected.all);
+
+  // Aggregator that matches your global conventions
+  function aggregateRows(rowArray) {
+    const agg = aggInit();
+    for (const r of rowArray) aggAdd(agg, r);
+    return aggFinalize(agg);
+  }
+
+  // 1) Singles Match Record vs Selected Players as Opponent (fixed 8 rows)
+  const singlesRowsAll = masterRows.filter(r => String(r.format ?? r.Format ?? "").trim() === "Singles");
+
+  function singlesRowFor(player, opponent) {
+    const rows = singlesRowsAll.filter(r => {
+      const p = String(r.player ?? r.Player ?? "").trim();
+      const opp = String(r.opponent ?? r.Opponent ?? "").trim();
+      return p === player && opp === opponent;
+    });
+    const agg = aggregateRows(rows);
+    return [
+      player,
+      opponent,
+      agg.matches,
+      `${agg.wins}-${agg.losses}-${agg.halved}`,
+      fmtNum(agg.points, 2),
+      fmtPct01(agg.pointPct01),
+      fmtNum(agg.ptsDiff, 2),
+    ];
+  }
+
+  const singlesSelectedRows = [
+    singlesRowFor(ca1, tx1),
+    singlesRowFor(ca1, tx2),
+    singlesRowFor(ca2, tx1),
+    singlesRowFor(ca2, tx2),
+    singlesRowFor(tx1, ca1),
+    singlesRowFor(tx1, ca2),
+    singlesRowFor(tx2, ca1),
+    singlesRowFor(tx2, ca2),
+  ];
+
+  base.tables.push({
+    id: "singles_match_record_selected_players",
+    title: "Singles Match Record vs Selected Players as Opponent",
+    markdown: mdTable(
+      ["Player", "Opponent", "Matches", "Record", "Points", "Point %", "Point Differential"],
+      singlesSelectedRows
+    ),
+  });
+
+  // Pre-index Fourball matches by matchId so we can derive opponent relations (since opponent isn't in sheet for fourball)
+  const byMatchId = new Map();
+  for (const r of masterRows) {
+    const fmt = String(r.format ?? r.Format ?? "").trim();
+    if (fmt !== "Fourball") continue;
+    const mid = String(r.matchId ?? r.Match_ID ?? r.matchid ?? "").trim();
+    if (!mid) continue;
+    if (!byMatchId.has(mid)) byMatchId.set(mid, []);
+    byMatchId.get(mid).push(r);
+  }
+
+  // 2) Fourball Match Record vs Selected Players as Opponent (fixed 8 rows)
+  // We build directional aggregates: player vs opponent when they appeared in the same fourball match on opposite teams.
+  const fourballVsOppAgg = new Map(); // key "player|opponent" -> agg
+
+  for (const [, matchRows] of byMatchId.entries()) {
+    // Partition by team
+    const teamMap = new Map(); // teamName -> array of rows
+    for (const r of matchRows) {
+      const p = String(r.player ?? r.Player ?? "").trim();
+      if (!selectedSet.has(p)) continue; // only care about selected players
+      const team = String(r.team ?? r.Team ?? "").trim();
+      if (!team) continue;
+      if (!teamMap.has(team)) teamMap.set(team, []);
+      teamMap.get(team).push(r);
+    }
+
+    if (teamMap.size < 2) continue;
+
+    const teams = Array.from(teamMap.keys());
+    const tA = teams[0];
+    const tB = teams[1];
+
+    const sideA = teamMap.get(tA) || [];
+    const sideB = teamMap.get(tB) || [];
+
+    // For each selected player row on one side, pair against each selected player row on the other side
+    for (const ra of sideA) {
+      const pa = String(ra.player ?? ra.Player ?? "").trim();
+      for (const rb of sideB) {
+        const pb = String(rb.player ?? rb.Player ?? "").trim();
+        const key = `${pa}|${pb}`;
+        if (!fourballVsOppAgg.has(key)) fourballVsOppAgg.set(key, aggInit());
+        aggAdd(fourballVsOppAgg.get(key), ra); // IMPORTANT: use player's row (directional)
+      }
+    }
+
+    for (const rb of sideB) {
+      const pb = String(rb.player ?? rb.Player ?? "").trim();
+      for (const ra of sideA) {
+        const pa = String(ra.player ?? ra.Player ?? "").trim();
+        const key = `${pb}|${pa}`;
+        if (!fourballVsOppAgg.has(key)) fourballVsOppAgg.set(key, aggInit());
+        aggAdd(fourballVsOppAgg.get(key), rb);
+      }
+    }
+  }
+
+  function fourballVsOppRow(player, opponent) {
+    const key = `${player}|${opponent}`;
+    const agg = fourballVsOppAgg.has(key) ? aggFinalize(fourballVsOppAgg.get(key)) : aggFinalize(aggInit());
+    return [
+      player,
+      opponent,
+      agg.matches,
+      `${agg.wins}-${agg.losses}-${agg.halved}`,
+      fmtNum(agg.points, 2),
+      fmtPct01(agg.pointPct01),
+      fmtNum(agg.ptsDiff, 2),
+    ];
+  }
+
+  const fourballSelectedOppRows = [
+    fourballVsOppRow(ca1, tx1),
+    fourballVsOppRow(ca1, tx2),
+    fourballVsOppRow(ca2, tx1),
+    fourballVsOppRow(ca2, tx2),
+    fourballVsOppRow(tx1, ca1),
+    fourballVsOppRow(tx1, ca2),
+    fourballVsOppRow(tx2, ca1),
+    fourballVsOppRow(tx2, ca2),
+  ];
+
+  // Optional: sort by Points Differential desc (if you want it later, uncomment)
+  // fourballSelectedOppRows.sort((a,b) => Number(b[6]) - Number(a[6]));
+
+  base.tables.push({
+    id: "fourball_match_record_selected_players",
+    title: "Fourball Match Record vs Selected Players as Opponent",
+    markdown: mdTable(
+      ["Player", "Opponent", "Matches", "Record", "Points", "Point %", "Point Differential"],
+      fourballSelectedOppRows
+    ),
+  });
+
+  // 3) Fourball Match Record with Selected Players as Partner (fixed 2 rows)
+  // We aggregate match-level once per match (not per player row), using both partner rows together then divide points by 2.
+  const fourballRows = masterRows.filter(r => String(r.format ?? r.Format ?? "").trim() === "Fourball");
+
+  function partnerAgg(partnerA, partnerB) {
+    const agg = { matches: 0, wins: 0, losses: 0, halved: 0, points: 0, ptsDiff: 0 };
+
+    // Group candidate matches by matchId where both partners appear on same team
+    const map = new Map(); // matchId -> rows
+    for (const r of fourballRows) {
+      const p = String(r.player ?? r.Player ?? "").trim();
+      if (p !== partnerA && p !== partnerB) continue;
+
+      const mid = String(r.matchId ?? r.Match_ID ?? r.matchid ?? "").trim();
+      if (!mid) continue;
+      if (!map.has(mid)) map.set(mid, []);
+      map.get(mid).push(r);
+    }
+
+    for (const [, arr] of map.entries()) {
+      if (arr.length < 2) continue;
+
+      // ensure same team
+      const t1 = String(arr[0].team ?? arr[0].Team ?? "").trim();
+      const t2 = String(arr[1].team ?? arr[1].Team ?? "").trim();
+      if (!t1 || t1 !== t2) continue;
+
+      // match-level W/L/H are duplicated per player row; take from the first
+      agg.matches += 1;
+      agg.wins += rowW(arr[0]);
+      agg.losses += rowL(arr[0]);
+      agg.halved += rowH(arr[0]);
+
+      // Points are duplicated (sum both then divide by 2)
+      const pts = (rowPoints(arr[0]) + rowPoints(arr[1])) / 2;
+      agg.points += pts;
+
+      // ptsDiff duplicated; take first (don’t double)
+      agg.ptsDiff += rowPtsDiff(arr[0]);
+    }
+
+    const pct = agg.matches ? (agg.points / agg.matches) : 0;
+    return { ...agg, pointPct01: pct };
+  }
+
+  const caPair = partnerAgg(ca1, ca2);
+  const txPair = partnerAgg(tx1, tx2);
+
+  const partnerRows = [
+    [`${ca1} and ${ca2}`, caPair.matches, `${caPair.wins}-${caPair.losses}-${caPair.halved}`, fmtNum(caPair.points, 2), fmtPct01(caPair.pointPct01), fmtNum(caPair.ptsDiff, 2)],
+    [`${tx1} and ${tx2}`, txPair.matches, `${txPair.wins}-${txPair.losses}-${txPair.halved}`, fmtNum(txPair.points, 2), fmtPct01(txPair.pointPct01), fmtNum(txPair.ptsDiff, 2)],
+  ];
+
+  base.tables.push({
+    id: "fourball_partner_record_selected_players",
+    title: "Fourball Match Record with Selected Players as Partner",
+    markdown: mdTable(
+      ["Partner", "Matches", "Record", "Points", "Point %", "Point Differential"],
+      partnerRows
+    ),
+  });
+
+  // --- Add the reused Player Profile tables in the exact order you requested ---
+  addPrefixedTable("CA1", ppCA1, "format_split", `${ca1} Format Splits`);
+  addPrefixedTable("CA1", ppCA1, "ranks", `${ca1} Ranks`);
+
+  addPrefixedTable("CA2", ppCA2, "format_split", `${ca2} Format Splits`);
+  addPrefixedTable("CA2", ppCA2, "ranks", `${ca2} Ranks`);
+
+  addPrefixedTable("TX1", ppTX1, "format_split", `${tx1} Format Splits`);
+  addPrefixedTable("TX1", ppTX1, "ranks", `${tx1} Ranks`);
+
+  addPrefixedTable("TX2", ppTX2, "format_split", `${tx2} Format Splits`);
+  addPrefixedTable("TX2", ppTX2, "ranks", `${tx2} Ranks`);
+
+  // --- Prediction math (Fourball) ---
+  // Player WA = 60% career singles Point% + 40% career fourball Point%
+  // Team WA = 65% stronger + 35% weaker
+  // Log5 -> Team WP
+  // Halved% = 13% * (1 - (ABS(WP - 0.5) * 2))
+  // Win% = (1 - Halved%) * WP  (and counterpart)
+
+  function careerPointPctByFormat(playerName, formatName) {
+    const filtered =
+      formatName === "Singles"
+        ? masterRows.filter(r => String(r.format ?? r.Format ?? "").trim() === "Singles" && String(r.player ?? r.Player ?? "").trim() === playerName)
+        : masterRows.filter(r => String(r.format ?? r.Format ?? "").trim() === "Fourball" && String(r.player ?? r.Player ?? "").trim() === playerName);
+
+    const agg = aggregateRows(filtered);
+    // If player has no matches in this format, treat as neutral 50%
+    return agg.matches ? agg.pointPct01 : 0.5;
+  }
+
+  function playerWA(playerName) {
+    const s = careerPointPctByFormat(playerName, "Singles");
+    const f = careerPointPctByFormat(playerName, "Fourball");
+    return (0.6 * s) + (0.4 * f);
+  }
+
+  function log5(pA, pB) {
+    const denom = (pA + pB - 2 * pA * pB);
+    if (!denom) return 0.5;
+    return (pA - pA * pB) / denom;
+  }
+
+  function halvedPctFromWP(wp) {
+    return 0.13 * (1 - (Math.abs(wp - 0.5) * 2));
+  }
+
+  const caWA1 = playerWA(ca1);
+  const caWA2 = playerWA(ca2);
+  const txWA1 = playerWA(tx1);
+  const txWA2 = playerWA(tx2);
+
+  const caliStronger = Math.max(caWA1, caWA2);
+  const caliWeaker = Math.min(caWA1, caWA2);
+  const texStronger = Math.max(txWA1, txWA2);
+  const texWeaker = Math.min(txWA1, txWA2);
+
+  const caliTeamWA = (0.65 * caliStronger) + (0.35 * caliWeaker);
+  const texTeamWA = (0.65 * texStronger) + (0.35 * texWeaker);
+
+  const caliWP = log5(caliTeamWA, texTeamWA);
+  const texWP = 1 - caliWP;
+
+  const halved = halvedPctFromWP(caliWP);
+  const caliWin = (1 - halved) * caliWP;
+  const texWin = (1 - halved) * texWP;
+
+  // --- Facts ---
+  base.facts = {
+    CA1: ca1Facts,
+    CA2: ca2Facts,
+    TX1: tx1Facts,
+    TX2: tx2Facts,
+    "Match Prediction": {
+      "Cali Win": fmtPct01(caliWin),
+      "Tex-Mex Win": fmtPct01(texWin),
+      "Halved Match": fmtPct01(halved),
+    },
+  };
+
+  return base;
+}
+
+/******************************************************************
+ * Year / Trip Summary bundle (NEW)
+ ******************************************************************/
+async function buildBundleYearTripSummary(base) {
+  const rows = await getMasterNormalizedMatchRows();
+  const teamRows = await getTeamResultsNormalized();
+
+  const year = Number(base.inputs?.year);
+  if (!Number.isFinite(year)) {
+    base.facts = { error: "Year is required." };
+    return base;
+  }
+
+  const yrTeam = teamRows.find(t => t.year === year);
+  if (!yrTeam) {
+    base.facts = { error: `Year ${year} not found in Master Team Results.` };
+    return base;
+  }
+
+  const trip = yrTeam.trip;
+  const location = yrTeam.location;
+  const winningTeam = yrTeam.winningTeam;
+  const caliPoints = yrTeam.caliPoints;
+  const texPoints = yrTeam.texPoints;
+  const margin = Math.abs(caliPoints - texPoints);
+
+// Additional context
+const tournamentCount = teamRows.filter(t => t.year <= year).length;
+const histRows = teamRows.filter(t => t.year < year);
+const historicalCaliWins = histRows.filter(t => String(t.winningTeam).toLowerCase().includes("cali")).length;
+const historicalTexMexWins = histRows.filter(t => String(t.winningTeam).toLowerCase().includes("tex")).length;
+const priorYearWinningTeam = (teamRows.find(t => t.year === year - 1) || {}).winningTeam || "";
+const totalCaliWinsThroughYear = teamRows.filter(t => t.year <= year && String(t.winningTeam).toLowerCase().includes("cali")).length;
+const totalTexMexWinsThroughYear = teamRows.filter(t => t.year <= year && String(t.winningTeam).toLowerCase().includes("tex")).length;
+
+
+  const thisYearRows = rows.filter(r => Number(r.year) === year);
+  const priorRows = rows.filter(r => Number(r.year) < year);
+
+  // ---- Team totals + historical margins
+  const histMargins = teamRows
+    .filter(t => t.year < year)
+    .map(t => ({
+      year: t.year,
+      trip: t.trip || "",
+      winner: t.winningTeam,
+      cali: t.caliPoints,
+      tex: t.texPoints,
+      margin: Math.abs(t.caliPoints - t.texPoints),
+    }))
+    .sort((a,b) => b.year - a.year);
+
+  const histMarginTable = mdTable(
+    ["Year", "Trip", "Winning Team", "Cali Points", "Tex-Mex Points", "Margin"],
+    histMargins.map(h => [h.year, h.trip, h.winner, fmtNum(h.cali,1), fmtNum(h.tex,1), fmtNum(h.margin,1)])
+  );
+
+
+  // ---- Round summary (TEAM totals) (divide fourball by 2 at match level)
+  function teamRoundTotals(yrRows) {
+    const perRound = new Map(); // round -> { cali, tex }
+
+    for (const r of (yrRows || [])) {
+      const round = Number(r.round);
+      if (!Number.isFinite(round)) continue;
+
+      const team = String(r.team || "").trim();
+      const format = String(r.format || "").trim();
+      const ptsRaw = rowPoints(r);
+
+      // IMPORTANT: Fourball has 4 player-rows per match; divide at row-level
+      const pts = (format === "Fourball") ? (ptsRaw * 0.5) : ptsRaw;
+
+      if (!perRound.has(round)) perRound.set(round, { cali: 0, tex: 0 });
+      const v = perRound.get(round);
+
+      if (team === "Cali") v.cali += pts;
+      else if (team === "Tex-Mex") v.tex += pts;
+    }
+
+    const out = Array.from(perRound.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([round, v]) => ({
+        round,
+        cali: v.cali,
+        tex: v.tex,
+        margin: v.cali - v.tex,
+      }));
+
+    return out;
+  }
+
+  const roundTotals = teamRoundTotals(thisYearRows);
+  
+// Course by round (first non-empty)
+const courseByRound = new Map();
+for (const r of thisYearRows) {
+  const rd = Number(r.round);
+  if (!Number.isFinite(rd)) continue;
+  const c = String(r.course || "").trim();
+  if (c && !courseByRound.has(rd)) courseByRound.set(rd, c);
+}
+
+// Build enhanced round summary with cumulative + lead
+let cumCali = 0;
+let cumTex = 0;
+const roundSummaryRows = (roundTotals || []).map((rr) => {
+  // NOTE: teamRoundTotals() returns { round, cali, tex, margin }
+  const cali = Number(rr.cali) || 0;
+  const tex  = Number(rr.tex)  || 0;
+
+  cumCali += cali;
+  cumTex  += tex;
+
+  const leadingTeam =
+    cumCali === cumTex ? "Tied" : (cumCali > cumTex ? "Cali" : "Tex-Mex");
+
+  const lead = Math.abs(cumCali - cumTex);
+
+  const fmtSet = new Set(
+    thisYearRows
+      .filter(r => Number(r.round) === rr.round)
+      .map(r => String(r.format || "").trim())
+      .filter(Boolean)
+  );
+  const formatLabel = fmtSet.size ? Array.from(fmtSet).join("/") : "";
+
+  return [
+    rr.round,
+    formatLabel,
+    courseByRound.get(rr.round) || "",
+    fmtNum(cali, 1),
+    fmtNum(tex, 1),
+    fmtNum(cumCali, 1),
+    fmtNum(cumTex, 1),
+    leadingTeam,
+    fmtNum(lead, 1),
+  ];
+});
+
+const roundTable = mdTable(
+  ["Round","Format","Course","Cali Round Points","Tex-Mex Round Points","Cali Cumulative Round Points","Tex-Mex Cumulative Round Points","Leading Team","Lead"],
+  roundSummaryRows
+);
+
+// ---- Match Details (one row per match)
+function getMatchId(r) {
+  return String(r.matchId ?? r.matchid ?? r.Match_ID ?? r.MatchId ?? "").trim();
+}
+
+const matchMap = new Map(); // matchId -> { round, format, caliPlayers[], texPlayers[], caliPtsRaw, texPtsRaw }
+
+for (const r of thisYearRows) {
+  const id = getMatchId(r);
+  if (!id) continue;
+
+  const roundNum = Number(r.round);
+  const format = String(r.format || "").trim();
+  const team = String(r.team || "").trim();
+  const player = String(r.player || "").trim();
+  const pts = rowPoints(r);
+
+  if (!matchMap.has(id)) {
+    matchMap.set(id, { matchId: id, round: roundNum, format, caliPlayers: [], texPlayers: [], caliPtsRaw: 0, texPtsRaw: 0 });
+  }
+
+  const m = matchMap.get(id);
+
+  if (Number.isFinite(roundNum)) m.round = roundNum;
+  if (format) m.format = format;
+
+  if (team === "Cali") {
+    m.caliPtsRaw += pts;
+    if (player && !m.caliPlayers.includes(player)) m.caliPlayers.push(player);
+  } else if (team === "Tex-Mex") {
+    m.texPtsRaw += pts;
+    if (player && !m.texPlayers.includes(player)) m.texPlayers.push(player);
+  }
+}
+
+const matchDetailRows = Array.from(matchMap.values())
+  .sort((a, b) => (Number(a.round) - Number(b.round)) || a.matchId.localeCompare(b.matchId))
+  .map(m => {
+    // Divide fourball totals by 2 at match level
+    const caliPts = (m.format === "Fourball") ? (m.caliPtsRaw / 2) : m.caliPtsRaw;
+    const texPts  = (m.format === "Fourball") ? (m.texPtsRaw / 2)  : m.texPtsRaw;
+
+    let result = "Halved";
+    if (caliPts > texPts) result = "Cali Win";
+    else if (texPts > caliPts) result = "Tex-Mex Win";
+
+    return [
+      m.round,
+      m.format,
+      m.matchId,
+      m.caliPlayers[0] || "",
+      m.caliPlayers[1] || "",
+      m.texPlayers[0] || "",
+      m.texPlayers[1] || "",
+      result,
+    ];
+  });
+
+const matchDetailsTable = mdTable(
+  ["Round","Format","Match ID","Cali Player 1","Cali Player 2","Tex-Mex Player 1","Tex-Mex Player 2","Match Result"],
+  matchDetailRows
+);
+
+// ---- Years participating (count distinct years <= selected year)
+const yearsByPlayer = new Map(); // player -> Set(year)
+
+for (const r of rows) {
+  const y = Number(r.year);
+  if (!Number.isFinite(y) || y > year) continue;
+
+  const p = String(r.player ?? "").trim();
+  if (!p) continue;
+
+  if (!yearsByPlayer.has(p)) yearsByPlayer.set(p, new Set());
+  yearsByPlayer.get(p).add(y);
+}
+
+// ---- Participant Contribution (per player; no fourball divide)
+const playerAgg = new Map(); // player -> agg
+const playerTeam = new Map(); // player -> team (from rows)
+for (const r of thisYearRows) {
+  const p = String(r.player ?? "").trim();
+  if (!p) continue;
+  if (!playerAgg.has(p)) playerAgg.set(p, aggInit());
+  aggAdd(playerAgg.get(p), r);
+  if (!playerTeam.has(p)) playerTeam.set(p, String(r.team ?? "").trim());
+}
+const contribRows = Array.from(playerAgg.entries()).map(([player, agg]) => {
+  const f = aggFinalize(agg);
+  return {
+    player,
+    team: playerTeam.get(player) || "",
+    yearsParticipating: yearsByPlayer.has(player) ? yearsByPlayer.get(player).size : 0,
+    matches: f.matches,
+    record: `${f.wins}-${f.losses}-${f.halved}`,
+    points: f.points,
+    pointPct01: f.pointPct01,
+  };
+}).sort((a,b) => (b.pointPct01 - a.pointPct01) || (b.points - a.points) || a.player.localeCompare(b.player));
+
+// MVP / Not So MVP for selected year (ties)
+const maxPct = Math.max(...contribRows.map(x => x.pointPct01));
+const minPct = Math.min(...contribRows.map(x => x.pointPct01));
+const mvps = contribRows.filter(x => x.pointPct01 === maxPct).map(x => x.player);
+const nots = contribRows.filter(x => x.pointPct01 === minPct).map(x => x.player);
+
+const contribTable = mdTable(
+  ["Player", "Team", "Years Participating", "Record", "Points", "Point %"],
+  contribRows.map(p => [p.player, p.team, p.yearsParticipating, p.record, fmtNum(p.points,1), fmtPct01(p.pointPct01)])
+);
+
+// ---- Notable matches / upset candidates
+// Utilities to compute career-to-date singles pt% / ptsdiff, and h2h history, using prior years only
+function careerSinglesPctBefore(player) {
+  const pr = priorRows.filter(r => String(r.player).trim() === player && String(r.format).trim() === "Singles");
+  const a = aggFinalize(pr.reduce((acc, rr) => (aggAdd(acc, rr), acc), aggInit()));
+  return a.pointPct01;
+}
+function careerSinglesPtsDiffBefore(player) {
+  const pr = priorRows.filter(r => String(r.player).trim() === player && String(r.format).trim() === "Singles");
+  const a = aggFinalize(pr.reduce((acc, rr) => (aggAdd(acc, rr), acc), aggInit()));
+  return a.ptsDiff;
+}
+function priorH2HSingles(a, b) {
+  const pr = priorRows.filter(r => String(r.format).trim() === "Singles" &&
+    ((String(r.player).trim() === a && String(r.opponent ?? "").trim() === b) ||
+      (String(r.player).trim() === b && String(r.opponent ?? "").trim() === a)));
+  const aAgg = aggFinalize(pr.filter(r => String(r.player).trim() === a).reduce((acc, rr) => (aggAdd(acc, rr), acc), aggInit()));
+  const bAgg = aggFinalize(pr.filter(r => String(r.player).trim() === b).reduce((acc, rr) => (aggAdd(acc, rr), acc), aggInit()));
+  return { matches: aAgg.matches, aAgg, bAgg };
+}
+
+// Get singles matches in selected year as pairs by matchId
+const singlesByMatch = new Map();
+for (const r of thisYearRows) {
+  if (String(r.format).trim() !== "Singles") continue;
+  const id = String(r.matchId ?? "").trim();
+  if (!id) continue;
+  if (!singlesByMatch.has(id)) singlesByMatch.set(id, []);
+  singlesByMatch.get(id).push(r);
+}
+
+const singlesMatches = [];
+for (const [id, mr] of singlesByMatch.entries()) {
+  if (mr.length < 2) continue;
+  const a = mr[0];
+  const b = mr[1];
+  singlesMatches.push({
+    matchId: id,
+    round: Number(a.round),
+    playerA: String(a.player).trim(),
+    playerB: String(b.player).trim(),
+    teamA: String(a.team).trim(),
+    teamB: String(b.team).trim(),
+    resultA: String(a.result ?? "").trim(),
+    resultB: String(b.result ?? "").trim(),
+    pointsA: rowPoints(a),
+    pointsB: rowPoints(b),
+    ptsDiffA: rowPtsDiff(a),
+    ptsDiffB: rowPtsDiff(b),
+  });
+}
+
+function winnerOf(m) {
+  // winner is the one with Points==1 (or higher)
+  if (m.pointsA > m.pointsB) return { player: m.playerA, opponent: m.playerB, team: m.teamA, round: m.round };
+  if (m.pointsB > m.pointsA) return { player: m.playerB, opponent: m.playerA, team: m.teamB, round: m.round };
+  return null; // halved
+}
+
+// Candidate 1: largest career-to-date singles point% variance where lower pct wins
+let cand1 = null;
+for (const m of singlesMatches) {
+  const w = winnerOf(m);
+  if (!w) continue;
+  const pctW = careerSinglesPctBefore(w.player);
+  const pctL = careerSinglesPctBefore(w.opponent);
+  const variance = Math.abs(pctW - pctL);
+  const lowerWins = pctW < pctL;
+  if (!lowerWins) continue;
+  if (!cand1 || variance > cand1.variance) cand1 = { ...w, variance, pctW, pctL, matchId: m.matchId };
+}
+
+// Candidate 2: lowest career-to-date singles points differential player wins
+// Find global min among players who have prior singles rows
+const priorSinglesPlayers = Array.from(new Set(priorRows.filter(r => String(r.format).trim()==="Singles").map(r => String(r.player).trim()).filter(Boolean)));
+let minPD = null;
+for (const p of priorSinglesPlayers) {
+  const pd = careerSinglesPtsDiffBefore(p);
+  if (minPD == null || pd < minPD) minPD = pd;
+}
+const minPDPlayers = minPD == null ? [] : priorSinglesPlayers.filter(p => careerSinglesPtsDiffBefore(p) === minPD);
+
+let cand2 = null;
+for (const m of singlesMatches) {
+  const w = winnerOf(m);
+  if (!w) continue;
+  if (!minPDPlayers.includes(w.player)) continue;
+  cand2 = { ...w, careerSinglesPtsDiff: minPD, matchId: m.matchId };
+  break;
+}
+
+// Candidate 3: winner had never won vs opponent before (requires >=1 prior match)
+let cand3 = null;
+for (const m of singlesMatches) {
+  const w = winnerOf(m);
+  if (!w) continue;
+  const h = priorH2HSingles(w.player, w.opponent);
+  if (h.matches < 1) continue;
+  // wins are from aAgg.wins
+  if (h.aAgg.wins === 0) {
+    cand3 = { ...w, priorH2HMatches: h.matches, matchId: m.matchId };
+    break;
+  }
+}
+
+// Candidate 4: winner had lowest predicted win% based on prior years
+function h2hWeightFromMatches(n) {
+  if (n >= 4) return 0.60;
+  if (n === 3) return 0.45;
+  if (n === 2) return 0.30;
+  if (n === 1) return 0.15;
+  return 0.00;
+}
+function log5(pA, pB) {
+  const denom = (pA + pB - (2 * pA * pB));
+  if (!denom) return 0.5;
+  return (pA - (pA * pB)) / denom;
+}
+function clamp(x, mn, mx) { return Math.min(mx, Math.max(mn, x)); }
+
+let cand4 = null;
+for (const m of singlesMatches) {
+  const w = winnerOf(m);
+  if (!w) continue;
+
+  const h = priorH2HSingles(w.player, w.opponent);
+  const wgt = h2hWeightFromMatches(h.matches);
+
+  const cW = careerSinglesPctBefore(w.player);
+  const cL = careerSinglesPctBefore(w.opponent);
+
+  // compute H2H point % prior (directional)
+  const hAggW = aggFinalize(priorRows.filter(r => String(r.format).trim()==="Singles" && String(r.player).trim()===w.player && String(r.opponent ?? "").trim()===w.opponent).reduce((acc, rr) => (aggAdd(acc, rr), acc), aggInit()));
+  const hAggL = aggFinalize(priorRows.filter(r => String(r.format).trim()==="Singles" && String(r.player).trim()===w.opponent && String(r.opponent ?? "").trim()===w.player).reduce((acc, rr) => (aggAdd(acc, rr), acc), aggInit()));
+  const hPctW = hAggW.matches ? hAggW.pointPct01 : 0;
+  const hPctL = hAggL.matches ? hAggL.pointPct01 : 0;
+
+  const waW = (wgt * hPctW) + ((1 - wgt) * cW);
+  const waL = (wgt * hPctL) + ((1 - wgt) * cL);
+
+  const wpW = log5(waW, waL);
+  const cwpW = clamp(wpW, 0.077, 0.923);
+  const halved = 0.13 * (1 - (Math.abs(cwpW - 0.5) * 2));
+  const winW = (1 - halved) * cwpW;
+
+  if (!cand4 || winW < cand4.winProb) cand4 = { ...w, winProb: winW, matchId: m.matchId };
+}
+
+// Candidate 5: fourball match where winning team had lowest predicted win%
+// Build fourball matches in selected year by matchId, with the 4 players
+const fourballByMatch = new Map();
+for (const r of thisYearRows) {
+  if (String(r.format).trim() !== "Fourball") continue;
+  const id = String(r.matchId ?? "").trim();
+  if (!id) continue;
+  if (!fourballByMatch.has(id)) fourballByMatch.set(id, []);
+  fourballByMatch.get(id).push(r);
+}
+
+// Career format pct before selected year (for WA)
+function careerFormatPctBefore(player, format) {
+  const pr = priorRows.filter(r => String(r.player).trim() === player && String(r.format).trim() === format);
+  const a = aggFinalize(pr.reduce((acc, rr) => (aggAdd(acc, rr), acc), aggInit()));
+  return a.pointPct01;
+}
+function playerWA_Before(player) {
+  const s = careerFormatPctBefore(player, "Singles");
+  const f = careerFormatPctBefore(player, "Fourball");
+  return (0.60 * s) + (0.40 * f);
+}
+function teamWA_Before(pA, pB) {
+  const waA = playerWA_Before(pA);
+  const waB = playerWA_Before(pB);
+  const strong = Math.max(waA, waB);
+  const weak = Math.min(waA, waB);
+  return (0.65 * strong) + (0.35 * weak);
+}
+
+let cand5 = null;
+for (const [id, mr] of fourballByMatch.entries()) {
+  if (mr.length < 4) continue;
+
+  // Determine teams & players
+  const caliPlayers = mr.filter(r => String(r.team).trim()==="Cali").map(r => String(r.player).trim()).filter(Boolean);
+  const texPlayers = mr.filter(r => String(r.team).trim()==="Tex-Mex").map(r => String(r.player).trim()).filter(Boolean);
+  if (caliPlayers.length !== 2 || texPlayers.length !== 2) continue;
+
+  // Determine winning team from points (match-level; divide by2)
+  const caliPts = mr.filter(r => String(r.team).trim()==="Cali").reduce((s,r) => s + rowPoints(r), 0) / 2;
+  const texPts2 = mr.filter(r => String(r.team).trim()==="Tex-Mex").reduce((s,r) => s + rowPoints(r), 0) / 2;
+
+  let winTeam = null;
+  if (caliPts > texPts2) winTeam = "Cali";
+  else if (texPts2 > caliPts) winTeam = "Tex-Mex";
+  else continue; // halved
+
+  const waC = teamWA_Before(caliPlayers[0], caliPlayers[1]);
+  const waT = teamWA_Before(texPlayers[0], texPlayers[1]);
+
+  const wpC = log5(waC, waT);
+  const wpT = log5(waT, waC);
+  const cwpC = clamp(wpC, 0.077, 0.923);
+  const cwpT = clamp(wpT, 0.077, 0.923);
+  const halved = 0.13 * (1 - (Math.abs(cwpC - 0.5) * 2));
+  const winC = (1 - halved) * cwpC;
+  const winT = (1 - halved) * cwpT;
+
+  const winProb = winTeam === "Cali" ? winC : winT;
+
+  if (!cand5 || winProb < cand5.winProb) {
+    cand5 = {
+      matchId: id,
+      round: Number(mr[0].round),
+      winTeam,
+      caliPlayers,
+      texPlayers,
+      winProb,
+    };
+  }
+}
+
+const notable = [];
+if (cand1) notable.push({
+  Scenario: "Upset Candidate 1",
+  Round: cand1.round,
+  Summary: `${cand1.player} (career singles ${fmtPct01(cand1.pctW)}) beat ${cand1.opponent} (career singles ${fmtPct01(cand1.pctL)})`,
+  Evidence: `Match_ID ${cand1.matchId}; variance ${fmtPct01(cand1.variance)}`,
+});
+if (cand2) notable.push({
+  Scenario: "Upset Candidate 2",
+  Round: cand2.round,
+  Summary: `${cand2.player} (lowest prior career singles Points Differential: ${fmtNum(cand2.careerSinglesPtsDiff,1)}) won vs ${cand2.opponent}`,
+  Evidence: `Match_ID ${cand2.matchId}`,
+});
+if (cand3) notable.push({
+  Scenario: "Upset Candidate 3",
+  Round: cand3.round,
+  Summary: `${cand3.player} won vs ${cand3.opponent} after being 0-for-${cand3.priorH2HMatches} in prior singles H2H`,
+  Evidence: `Match_ID ${cand3.matchId}`,
+});
+if (cand4) notable.push({
+  Scenario: "Upset Candidate 4",
+  Round: cand4.round,
+  Summary: `${cand4.player} won vs ${cand4.opponent} despite lowest predicted win% (${fmtPct01(cand4.winProb)})`,
+  Evidence: `Match_ID ${cand4.matchId}`,
+});
+if (cand5) notable.push({
+  Scenario: "Upset Candidate 5",
+  Round: cand5.round,
+  Summary: `${cand5.winTeam} won a fourball despite lowest predicted win% (${fmtPct01(cand5.winProb)})`,
+  Evidence: `Match_ID ${cand5.matchId}; Cali: ${cand5.caliPlayers.join(" + ")} vs Tex-Mex: ${cand5.texPlayers.join(" + ")}`,
+});
+
+const notableTable = mdTable(
+  ["Scenario", "Round", "Summary", "Evidence"],
+  notable.map(n => [n.Scenario, n.Round, n.Summary, n.Evidence])
+);
+
+// ---- Rarity facts (year-level)
+const rarityFacts = [];
+
+// Largest and smallest margins (prior years only)
+const histAll = teamRows.filter(t => t.year < year);
+if (histAll.length) {
+  const sorted = histAll.map(t => ({ year: t.year, margin: Math.abs(t.caliPoints - t.texPoints), winner: t.winningTeam }))
+                        .sort((a,b) => b.margin - a.margin);
+  const largest = sorted[0];
+  const smallest = sorted.slice().sort((a,b) => a.margin - b.margin)[0];
+  rarityFacts.push({ Key: "LargestMarginBeforeYear", Text: `Largest margin before ${year}: ${largest.margin.toFixed(1)} points (${largest.winner}, ${largest.year}).` });
+}
+
+// Largest comeback (winning team faced biggest deficit at any round subtotal) before selected year
+function maxDeficitForWinningTeam(y) {
+  const t = teamRows.find(tr => tr.year === y);
+  if (!t) return null;
+  const thisYearRows = rows.filter(r => Number(r.year) === y);
+  const perRound = teamRoundTotals(thisYearRows);
+  // cumulative
+  let cum = 0;
+  let minCum = 0;
+  let minRound = null;
+  for (const rr of perRound) {
+    cum += rr.margin; // Cali - Tex
+    if (cum < minCum) { minCum = cum; minRound = rr.round; }
+  }
+  // if winner is Cali, deficit is minCum (most negative); else deficit is maxCum (most positive from Tex perspective)
+  if (t.winningTeam === "Cali") return { deficit: minCum, round: minRound, year: y };
+  // Tex-Mex winner: compute max positive cum (meaning Cali ahead) as deficit for Tex
+  let cum2=0, maxCum=0, maxRound=null;
+  for (const rr of perRound) {
+    cum2 += rr.margin;
+    if (cum2 > maxCum) { maxCum=cum2; maxRound=rr.round; }
+  }
+  return { deficit: maxCum, round: maxRound, year: y };
+}
+const comeback = histAll.map(t => maxDeficitForWinningTeam(t.year)).filter(Boolean);
+if (comeback.length) {
+  // winner deficit magnitude (positive means against winner)
+  const sorted = comeback.sort((a,b) => Math.abs(b.deficit) - Math.abs(a.deficit));
+  const best = sorted[0];
+  rarityFacts.push({ Key: "LargestComebackBeforeYear", Text: `Largest comeback before ${year}: winning team overcame a ${Math.abs(best.deficit).toFixed(1)}-point deficit (Round ${best.round}, ${best.year}).` });
+}
+
+base.tables = [
+  {
+    id: "year_summary",
+    title: "Year summary",
+    markdown: mdTable(
+      ["Year", "Trip", "Location", "Winning Team", "Cali Points", "Tex-Mex Points", "Margin"],
+      [[year, trip, location, winningTeam, fmtNum(caliPoints,1), fmtNum(texPoints,1), fmtNum(margin,1)]]
+    ),
+  },
+  { id: "round_summary", title: "Round summary", markdown: roundTable },
+  { id: "match_details", title: "Match details", markdown: matchDetailsTable },
+  { id: "notable_matches", title: "Notable matches (upset candidates)", markdown: notableTable },
+  { id: "participant_contribution", title: "Participant contribution", markdown: contribTable },
+  { id: "historical_margins", title: "Historical margins before selected year", markdown: histMarginTable },
+];
+
+base.facts = {
+  Year: year,
+  Trip: trip,
+  Location: location,
+  WinningTeam: winningTeam,
+  FinalScore: { Cali: fmtNum(caliPoints,1), "Tex-Mex": fmtNum(texPoints,1) },
+  Margin: fmtNum(margin,1),
+  MVPs: mvps,
+  NotSoMVPs: nots,
+  TotalCaliWins: totalCaliWinsThroughYear,
+  TotalTexMexWins: totalTexMexWinsThroughYear,
+  tournamentCount: tournamentCount,
+  priorYearWinningTeam: priorYearWinningTeam,
+  HistoricalCaliWins: historicalCaliWins,
+  historicalTexMexWins: historicalTexMexWins,
+};
+
+base.rarityFacts = rarityFacts;
+
+return base;
+}
+
+/***********************
+ * AI client-side rate limiter (UI speed bump only)
+ * NOTE: Real per-IP limiting must be done server-side (Vercel API).
+ ***********************/
+/*function aiClientRateLimitCheck({
+  maxPerMinute = 3,
+  maxPerDay = 50,           // set to null/0 to disable daily cap
+  storageKey = "ai_rate_limit_v1"
+} = {}) {
+  const now = Date.now();
+  const ONE_MIN = 60 * 1000;
+  const ONE_DAY = 24 * 60 * 60 * 1000;
+
+  let data;
+  try {
+    data = JSON.parse(localStorage.getItem(storageKey) || "{}");
+  } catch {
+    data = {};
+  }
+
+  const minuteHits = Array.isArray(data.minuteHits) ? data.minuteHits : [];
+  const dayHits = Array.isArray(data.dayHits) ? data.dayHits : [];
+
+  // prune old hits
+  const minuteHitsPruned = minuteHits.filter(ts => (now - ts) < ONE_MIN);
+  const dayHitsPruned = dayHits.filter(ts => (now - ts) < ONE_DAY);
+
+  // checks
+  if (minuteHitsPruned.length >= maxPerMinute) {
+    const oldest = minuteHitsPruned[0];
+    const retryMs = Math.max(0, ONE_MIN - (now - oldest));
+    return { ok: false, reason: "minute", retryMs };
+  }
+
+  if (maxPerDay && dayHitsPruned.length >= maxPerDay) {
+    const oldest = dayHitsPruned[0];
+    const retryMs = Math.max(0, ONE_DAY - (now - oldest));
+    return { ok: false, reason: "day", retryMs };
+  }
+
+  // record this hit
+  minuteHitsPruned.push(now);
+  dayHitsPruned.push(now);
+
+  const newData = { minuteHits: minuteHitsPruned, dayHits: dayHitsPruned };
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(newData));
+  } catch {
+    // if storage is blocked, fail open (don’t break the app)
+  }
+
+  return { ok: true, reason: null, retryMs: 0 };
+}
+
+function msToHuman(ms) {
+  const s = Math.ceil(ms / 1000);
+  if (s <= 60) return `${s}s`;
+  const m = Math.ceil(s / 60);
+  return `${m}m`;
+}*/
+
+
+/***********************
  * VIEW: AI Analysis and Predictions (UI only for now)
  ***********************/
 async function renderAIAnalysis() {
@@ -2767,6 +4766,7 @@ async function renderAIAnalysis() {
 
       <div style="display:flex; align-items:center; gap:10px;">
         <button class="btn" id="aiGenerateBtn" type="button">Generate</button>
+        <button class="btn" id="aiCopyBtn" type="button">Copy</button>
         <button class="btn" id="aiClearBtn" type="button">Clear</button>
       </div>
     </div>
@@ -2789,7 +4789,7 @@ async function renderAIAnalysis() {
   viewBodyEl.innerHTML = `
     <div class="tablewrap">
       <div style="border:1px solid rgba(255,255,255,0.25); border-radius:12px; min-height:320px; padding:14px;">
-        <div id="aiOutput" style="white-space:pre-wrap;">&lt;GenAI response&gt;</div>
+        <div id="aiOutput" style="white-space:pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px; overflow:auto; max-height: 60vh;">Clicking Generate creates the prompt and data for you to copy / paste into your preferred AI LLM. For best results, Gemini or Grok are recommended.</div>
       </div>
     </div>
   `;
@@ -2847,19 +4847,74 @@ async function renderAIAnalysis() {
     if (out) out.textContent = "";
   });
 
-  document.getElementById("aiGenerateBtn").addEventListener("click", () => {
+  document.getElementById("aiCopyBtn").addEventListener("click", () => {
+    const out = document.getElementById("aiOutput");
+    const btn = document.getElementById("aiCopyBtn");
+    if (!out || !out.textContent.trim()) return;
+    navigator.clipboard.writeText(out.textContent).then(() => {
+      if (btn) {
+        btn.textContent = "Copied!";
+        setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+      }
+    }).catch(() => {
+      if (btn) {
+        btn.textContent = "Copy failed — select text manually";
+        setTimeout(() => { btn.textContent = "Copy"; }, 2500);
+      }
+    });
+  });
+
+  document.getElementById("aiGenerateBtn").addEventListener("click", async () => {
     const out = document.getElementById("aiOutput");
     if (!out) return;
 
-    // UI-only placeholder for now
-    out.textContent =
-      `Scenario: ${ai.scenario}\n` +
-      `Style: ${ai.style}\n` +
-      (ai.scenario === "Year/Trip Summary" ? `Year: ${ai.year}\nTrip: ${ai.trip}\n` : "") +
-      (ai.scenario === "Player Profile" ? `Player: ${ai.player}\n` : "") +
-      (ai.scenario === "Singles Prediction" ? `Player 1: ${ai.player1}\nPlayer 2: ${ai.player2}\n` : "") +
-      (ai.scenario === "Fourball Prediction" ? `CA1: ${ai.ca1}\nCA2: ${ai.ca2}\nTX1: ${ai.tx1}\nTX2: ${ai.tx2}\n` : "") +
-      `\n<This function is under construction. Hold your damn horses. With the next release, GenAI response will appear here.>`;
+    // --- Client-side rate limit (UI speed bump) ---
+    /*const limit = aiClientRateLimitCheck({
+      maxPerMinute: 3,
+      maxPerDay: 50, // set to 0 or null to disable daily cap
+    });
+
+    if (!limit.ok) {
+      const wait = msToHuman(limit.retryMs);
+      if (limit.reason === "minute") {
+        out.textContent = `Rate limit: 3 requests per minute. Try again in ${wait}.`;
+      } else {
+        out.textContent = `Daily limit reached (50/day). Try again in ${wait}.`;
+      }
+      return;
+    }*/
+
+    out.textContent = "Building bundle…";
+
+    // Map UI labels to your canonical scenario ids
+    const scenarioMap = {
+      "Year/Trip Summary": "YEAR_TRIP_SUMMARY",
+      "Player Profile": "PLAYER_PROFILE",
+      "Singles Prediction": "SINGLES_PREDICTION",
+      "Fourball Prediction": "FOURBALL_PREDICTION",
+    };
+
+    const scenario = scenarioMap[ai.scenario] || "PLAYER_PROFILE";
+
+    const selections =
+      scenario === "YEAR_TRIP_SUMMARY" ? { year: Number(ai.year) } :
+      scenario === "PLAYER_PROFILE" ? { player: ai.player } :
+      scenario === "SINGLES_PREDICTION" ? { player1: ai.player1, player2: ai.player2 } :
+      { ca1: ai.ca1, ca2: ai.ca2, tx1: ai.tx1, tx2: ai.tx2 };
+
+    try {
+      const bundle = await buildAIBundle({ scenario, style: ai.style, selections });
+      const promptKey = `${scenario}|${ai.style}`;
+      out.textContent = "Fetching prompt\u2026";
+      let promptText = await loadPrompt(promptKey);
+      if (scenario === "YEAR_TRIP_SUMMARY") {
+        promptText = promptText.replace(/\bYEAR\b/g, String(selections.year));
+      }
+      out.textContent = promptText + "\n\n---\n\nDATA:\n" + JSON.stringify(bundle, null, 2);
+    } catch (e) {
+      console.error(e);
+      out.textContent = `Bundle build failed: ${e.message || e}`;
+    }
   });
 }
 
