@@ -1,4 +1,4 @@
-/* Latest file as of 3.6.2026 at 12:40pm */
+/* Latest file as of 3.6.2026 at 8:38pm (No merge to GitHub)*/
 
 /***********************
  * CONFIG: CSV URLS
@@ -4789,7 +4789,7 @@ async function renderAIAnalysis() {
   viewBodyEl.innerHTML = `
     <div class="tablewrap">
       <div style="border:1px solid rgba(255,255,255,0.25); border-radius:12px; min-height:320px; padding:14px;">
-        <div id="aiOutput" style="white-space:pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px; overflow:auto; max-height: 60vh;">Actually generating responses is still under construction. For now, this gives you everything you need to get the response on your own. Clicking Generate creates the pre-written prompt and data for you to copy / paste into your preferred AI LLM. For best results, Gemini or Grok are recommended.</div>
+        <div id="aiOutput" style="white-space:pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px; overflow:auto; max-height: 60vh;">Clicking Generate creates a pre-written prompt and the data for you to copy / paste into your preferred GenAI. For best results, Gemini or Grok are recommended.</div>
       </div>
     </div>
   `;
