@@ -1,4 +1,4 @@
-/* Latest file as of 3.6.2026 at 8:38pm (No merge to GitHub)*/
+/* Latest file as of 3.17.2026 at 9:30pm */
 
 /***********************
  * CONFIG: CSV URLS
@@ -99,6 +99,7 @@ async function getMasterMatchLogRaw() {
  * IMAGES (static lists)
  ***********************/
 const LOGO_FILES = [
+  "Logo24 - 2026 - Pronghorn.jpg",
   "Logo23 - 2025 - Sand Valley.jpg",
   "Logo22 - 2024 - St. George.jpg",
   "Logo21 - 2023 - Paynes Valley.jpg",
@@ -125,6 +126,9 @@ const LOGO_FILES = [
 ];
 
 const COURSE_FILES = [
+  "Course33 - 2026 - Pronghorn.jpg",
+  "Course34 - 2026 - Crosswater.jpg",
+  "Course35 - 2026 - Tetherow.jpg",
   "Course30 - 2025 - Sand Valley.jpg",
   "Course31 - 2025 - The Sandbox.jpg",
   "Course32 - 2025 - The Lido.jpg",
